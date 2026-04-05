@@ -47,18 +47,14 @@ func (ct *CostTracker) updateBudgets(budgets map[string]BudgetConfig) {
 
 // checkBudget evaluates whether a service has exceeded its daily budget.
 func (ct *CostTracker) checkBudget(service string) budgetCheck {
-	ct.mu.RLock()
-	defer ct.mu.RUnlock()
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
 
 	// Reset on day change
 	today := time.Now().Format("2006-01-02")
 	if today != ct.resetDate {
-		ct.mu.RUnlock()
-		ct.mu.Lock()
 		ct.dailyCosts = make(map[string]float64)
 		ct.resetDate = today
-		ct.mu.Unlock()
-		ct.mu.RLock()
 	}
 
 	// Look up budget: service-specific, then "default"

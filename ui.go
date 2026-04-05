@@ -22,6 +22,8 @@ func registerUI(mux *http.ServeMux) {
 		return
 	}
 
+	fileServer := http.FileServer(http.FS(sub))
+
 	// Serve index.html directly for root to avoid FileServer redirect loop
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -29,8 +31,7 @@ func registerUI(mux *http.ServeMux) {
 			w.Write(indexHTML)
 			return
 		}
-		// Serve other static files via FileServer
-		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
+		fileServer.ServeHTTP(w, r)
 	})
 
 	logger.Println("UI registered at /")

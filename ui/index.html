@@ -300,8 +300,8 @@ function renderDashboard() {
     <div class="flex items-center justify-between py-1.5">
       <div class="flex items-center gap-2">
         <span class="w-2 h-2 rounded-full ${b.status==='healthy'?'bg-green-500':b.status==='degraded'?'bg-yellow-500':'bg-red-500'}"></span>
-        <span class="text-sm">${b.name}</span>
-        <span class="text-xs text-slate-500">${b.type}</span>
+        <span class="text-sm">${esc(b.name)}</span>
+        <span class="text-xs text-slate-500">${esc(b.type)}</span>
       </div>
       <div class="flex items-center gap-3 text-xs text-slate-400">
         <span>${b.active_requests} active</span>
@@ -317,7 +317,7 @@ function renderDashboard() {
   const maxReqs = Math.max(...Object.values(svcs), 1);
   sEl.innerHTML = Object.entries(svcs).sort((a,b) => b[1]-a[1]).map(([svc, count]) => `
     <div class="flex items-center gap-3">
-      <span class="text-sm w-24 shrink-0">${svc}</span>
+      <span class="text-sm w-24 shrink-0">${esc(svc)}</span>
       <div class="flex-1 bg-slate-700 rounded h-5 overflow-hidden">
         <div class="cost-bar bg-sky-600 h-full" style="width:${count/maxReqs*100}%"></div>
       </div>
@@ -335,9 +335,9 @@ function renderDashboard() {
     const pct = limit ? (cost/limit*100).toFixed(0) : '-';
     return `
       <div class="flex items-center gap-3">
-        <span class="text-sm w-24 shrink-0">${svc}</span>
+        <span class="text-sm w-24 shrink-0">${esc(svc)}</span>
         <div class="flex-1 bg-slate-700 rounded h-5 overflow-hidden">
-          <div class="cost-bar ${cost/limit>0.9?'bg-red-500':cost/limit>0.7?'bg-yellow-500':'bg-green-600'} h-full" style="width:${cost/maxCost*100}%"></div>
+          <div class="cost-bar ${limit>0?(cost/limit>0.9?'bg-red-500':cost/limit>0.7?'bg-yellow-500':'bg-green-600'):'bg-sky-600'} h-full" style="width:${cost/maxCost*100}%"></div>
         </div>
         <span class="text-xs text-slate-400 w-32 text-right">$${cost.toFixed(4)} / $${limit.toFixed(2)} (${pct}%)</span>
       </div>
@@ -474,10 +474,6 @@ function renderFlow() {
 
   // Draw edges as SVG lines
   drawEdges();
-
-  // Global mouse events for dragging
-  document.addEventListener('mousemove', onFlowMouseMove);
-  document.addEventListener('mouseup', onFlowMouseUp);
 
   // Render palette
   renderPalette();
@@ -713,13 +709,13 @@ function renderBackends() {
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
           <span class="w-3 h-3 rounded-full ${b.status==='healthy'?'bg-green-500':b.status==='degraded'?'bg-yellow-500':'bg-red-500'}"></span>
-          <span class="font-medium">${b.name}</span>
+          <span class="font-medium">${esc(b.name)}</span>
         </div>
-        <span class="px-2 py-0.5 rounded text-xs badge-${b.status}">${b.status}</span>
+        <span class="px-2 py-0.5 rounded text-xs badge-${esc(b.status)}">${esc(b.status)}</span>
       </div>
       <div class="space-y-1.5 text-sm text-slate-400">
-        <div class="flex justify-between"><span>Type</span><span class="text-slate-200">${b.type}</span></div>
-        <div class="flex justify-between"><span>URL</span><span class="text-slate-200 text-xs truncate max-w-[200px]">${b.url}</span></div>
+        <div class="flex justify-between"><span>Type</span><span class="text-slate-200">${esc(b.type)}</span></div>
+        <div class="flex justify-between"><span>URL</span><span class="text-slate-200 text-xs truncate max-w-[200px]">${esc(b.url)}</span></div>
         <div class="flex justify-between"><span>Active</span><span class="text-slate-200">${b.active_requests}</span></div>
         <div class="flex justify-between"><span>Latency</span><span class="text-slate-200">${b.latency_ms}ms</span></div>
         <div class="flex justify-between"><span>Last Check</span><span class="text-slate-200">${b.last_check_ms < 1000 ? 'just now' : Math.round(b.last_check_ms/1000) + 's ago'}</span></div>
@@ -817,7 +813,7 @@ function renderCosts() {
   const tbody = document.getElementById('cost-table-body');
   tbody.innerHTML = breakdown.map(r => `
     <tr class="border-b border-slate-800">
-      <td class="py-2 pr-4">${r.service}</td><td class="py-2 pr-4">${r.model}</td><td class="py-2 pr-4">${r.call_type}</td>
+      <td class="py-2 pr-4">${esc(r.service)}</td><td class="py-2 pr-4">${esc(r.model)}</td><td class="py-2 pr-4">${esc(r.call_type)}</td>
       <td class="py-2 pr-4 text-right">${r.request_count.toLocaleString()}</td>
       <td class="py-2 pr-4 text-right">${r.total_input_tokens.toLocaleString()}</td>
       <td class="py-2 pr-4 text-right">${r.total_output_tokens.toLocaleString()}</td>
@@ -890,9 +886,21 @@ function formatUptime(seconds) {
 
 function fmt(n) { return n.toLocaleString(); }
 
+// Escape HTML to prevent XSS from backend/rule names
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════
+// Register flow drag listeners once (not per render)
+document.addEventListener('mousemove', onFlowMouseMove);
+document.addEventListener('mouseup', onFlowMouseUp);
+
 refresh();
 setInterval(refresh, 5000);
 </script>

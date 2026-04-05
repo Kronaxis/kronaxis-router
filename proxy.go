@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// Shared HTTP clients for connection reuse.
+var (
+	llmClient      = &http.Client{Timeout: 120 * time.Second}
+	streamClient   = &http.Client{Timeout: 180 * time.Second}
+)
+
 // OpenAI-compatible request/response structures.
 
 type ChatRequest struct {
@@ -71,12 +77,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErrorJSON(w, 400, "invalid request body")
 		return
 	}
-	defer r.Body.Close()
+
+	// Track active requests
+	incActive()
+	defer decActive()
 
 	// Parse request
 	var req ChatRequest
@@ -91,36 +101,29 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta.Stream = req.Stream
 	meta.ContentType = detectContentType(req.Messages)
 
-	// Check budget
+	// Check budget FIRST -- reject before routing
 	budgetResult := costs.checkBudget(meta.Service)
-
-	// Route the request
-	routeResult, err := rtr.Route(meta)
-	if err != nil {
-		// If routing fails and budget said downgrade, try the downgrade target
-		if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
-			backend := pool.Get(budgetResult.downgradeTarget)
-			if backend != nil && backend.IsAvailable() {
-				routeResult = RouteResult{Backend: backend, ModelName: backend.Config.ModelName}
-				err = nil
-			}
-		}
-		if err != nil {
-			writeErrorJSON(w, 503, "no healthy backend available")
-			return
-		}
-	}
-
-	// Budget enforcement
 	if budgetResult.action == "reject" {
 		writeErrorJSON(w, 429, fmt.Sprintf("daily budget exceeded for service %q", meta.Service))
 		return
 	}
+
+	// Route the request
+	routeResult, err := rtr.Route(meta)
+	if err != nil {
+		writeErrorJSON(w, 503, "no healthy backend available")
+		return
+	}
+
+	// Budget downgrade: if over budget, switch to cheaper backend
 	if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
 		downgraded := pool.Get(budgetResult.downgradeTarget)
 		if downgraded != nil && downgraded.IsAvailable() {
-			routeResult.Backend = downgraded
-			routeResult.ModelName = downgraded.Config.ModelName
+			// Only downgrade if the downgrade target is actually cheaper
+			if downgraded.Config.CostOutput1M < routeResult.Backend.Config.CostOutput1M {
+				routeResult.Backend = downgraded
+				routeResult.ModelName = downgraded.Config.ModelName
+			}
 		}
 	}
 
@@ -213,8 +216,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(statusCode)
 	w.Write(responseBody)
 
-	recordStat(meta, routeResult, latency, true)
-	logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
+	success := statusCode < 400
+	recordStat(meta, routeResult, latency, success)
+	logRequest(meta, routeResult, inputTokens, outputTokens, latency, success, "")
 }
 
 // forwardToBackend sends a request to the selected backend.
@@ -251,8 +255,7 @@ func forwardToOpenAI(backend *Backend, body []byte) (int, map[string]string, []b
 		httpReq.Header.Set("Authorization", "Bearer "+backend.Config.APIKey)
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -287,8 +290,7 @@ func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -484,8 +486,7 @@ func forwardToOllama(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -545,8 +546,7 @@ func handleStreaming(
 		httpReq.Header.Set("Authorization", "Bearer "+backend.Config.APIKey)
 	}
 
-	client := &http.Client{Timeout: 180 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		writeErrorJSON(w, 502, "backend connection failed")
 		return

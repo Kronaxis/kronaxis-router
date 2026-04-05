@@ -37,18 +37,18 @@ type BrandingConfig struct {
 }
 
 type BackendConfig struct {
-	Name           string   `yaml:"name"`
-	URL            string   `yaml:"url"`
-	Type           string   `yaml:"type"` // vllm, gemini, ollama, openai
-	ModelName      string   `yaml:"model_name"`
-	CostInput1M    float64  `yaml:"cost_input_1m"`
-	CostOutput1M   float64  `yaml:"cost_output_1m"`
-	Capabilities   []string `yaml:"capabilities"`
-	MaxConcurrent  int      `yaml:"max_concurrent"`
-	LoRAAdapters   []string `yaml:"lora_adapters"`
-	APIKey         string   `yaml:"api_key"`
-	Dynamic        bool     `yaml:"dynamic"`
-	HealthEndpoint string   `yaml:"health_endpoint"`
+	Name           string   `yaml:"name" json:"name"`
+	URL            string   `yaml:"url" json:"url"`
+	Type           string   `yaml:"type" json:"type"`
+	ModelName      string   `yaml:"model_name" json:"model_name"`
+	CostInput1M    float64  `yaml:"cost_input_1m" json:"cost_input_1m"`
+	CostOutput1M   float64  `yaml:"cost_output_1m" json:"cost_output_1m"`
+	Capabilities   []string `yaml:"capabilities" json:"capabilities"`
+	MaxConcurrent  int      `yaml:"max_concurrent" json:"max_concurrent"`
+	LoRAAdapters   []string `yaml:"lora_adapters" json:"lora_adapters"`
+	APIKey         string   `yaml:"api_key" json:"api_key,omitempty"`
+	Dynamic        bool     `yaml:"dynamic" json:"dynamic"`
+	HealthEndpoint string   `yaml:"health_endpoint" json:"health_endpoint"`
 }
 
 type RoutingRule struct {
@@ -198,7 +198,10 @@ func sortRules(c *Config) {
 }
 
 // Config hot-reload via polling.
-var configMu sync.RWMutex
+var (
+	configMu      sync.RWMutex
+	skipNextReload bool
+)
 
 func watchConfig(ctx context.Context, path string) {
 	var lastMod time.Time
@@ -223,6 +226,15 @@ func watchConfig(ctx context.Context, path string) {
 				continue
 			}
 			lastMod = info.ModTime()
+
+			// Skip reload if triggered by our own API write
+			configMu.Lock()
+			if skipNextReload {
+				skipNextReload = false
+				configMu.Unlock()
+				continue
+			}
+			configMu.Unlock()
 
 			newCfg, err := loadConfig(path)
 			if err != nil {

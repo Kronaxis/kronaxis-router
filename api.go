@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // handleRules serves CRUD for routing rules.
@@ -30,6 +31,14 @@ func handleRules(w http.ResponseWriter, r *http.Request) {
 		}
 
 		configMu.Lock()
+		// Check for duplicate names
+		for _, existing := range cfg.Rules {
+			if existing.Name == rule.Name {
+				configMu.Unlock()
+				writeErrorJSON(w, 409, "rule with name "+rule.Name+" already exists, use PUT to update")
+				return
+			}
+		}
 		cfg.Rules = append(cfg.Rules, rule)
 		sort.Slice(cfg.Rules, func(i, j int) bool {
 			return cfg.Rules[i].Priority > cfg.Rules[j].Priority
@@ -161,7 +170,11 @@ func handleConfigYAML(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Force reload
-		newCfg, _ := loadConfig(configPath)
+		newCfg, err := loadConfig(configPath)
+		if err != nil {
+			writeErrorJSON(w, 500, "config written but reload failed: "+err.Error())
+			return
+		}
 		configMu.Lock()
 		cfg = newCfg
 		pool.updateBackends(newCfg.Backends)
@@ -215,7 +228,26 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statsMu.RLock()
-	s := liveStats
+	// Deep copy maps to avoid data race on JSON marshal
+	s := LiveStats{
+		TotalRequests:   liveStats.TotalRequests,
+		ActiveRequests:  activeReqs.Load(),
+		TotalErrors:     liveStats.TotalErrors,
+		AvgLatencyMS:    liveStats.AvgLatencyMS,
+		UptimeSeconds:   int64(time.Since(startupTime).Seconds()),
+		RequestsByRule:  make(map[string]int64, len(liveStats.RequestsByRule)),
+		RequestsBySvc:   make(map[string]int64, len(liveStats.RequestsBySvc)),
+		RequestsByModel: make(map[string]int64, len(liveStats.RequestsByModel)),
+	}
+	for k, v := range liveStats.RequestsByRule {
+		s.RequestsByRule[k] = v
+	}
+	for k, v := range liveStats.RequestsBySvc {
+		s.RequestsBySvc[k] = v
+	}
+	for k, v := range liveStats.RequestsByModel {
+		s.RequestsByModel[k] = v
+	}
 	statsMu.RUnlock()
 
 	writeJSON(w, 200, s)
@@ -241,6 +273,11 @@ func saveConfigToDisk() {
 		logger.Printf("failed to marshal config: %v", err)
 		return
 	}
+
+	// Tell the config watcher to skip the next reload (we wrote this ourselves)
+	configMu.Lock()
+	skipNextReload = true
+	configMu.Unlock()
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		logger.Printf("failed to save config: %v", err)
 	}

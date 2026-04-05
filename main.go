@@ -151,13 +151,16 @@ func handleConfigView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{
+	configMu.RLock()
+	result := map[string]interface{}{
 		"rules_count":    len(cfg.Rules),
 		"backends_count": len(cfg.Backends),
 		"budgets":        cfg.Budgets,
 		"batching":       cfg.Batching,
 		"branding":       cfg.Server.Branding,
-	})
+	}
+	configMu.RUnlock()
+	writeJSON(w, 200, result)
 }
 
 func runMigrations() {
