@@ -52,35 +52,35 @@ type BackendConfig struct {
 }
 
 type RoutingRule struct {
-	Name     string    `yaml:"name"`
-	Priority int       `yaml:"priority"`
-	Match    RuleMatch `yaml:"match"`
-	Backends []string  `yaml:"backends"`
-	MaxCost  float64   `yaml:"max_cost_1m"`
-	Required []string  `yaml:"required_capabilities"`
+	Name     string    `yaml:"name" json:"name"`
+	Priority int       `yaml:"priority" json:"priority"`
+	Match    RuleMatch `yaml:"match" json:"match"`
+	Backends []string  `yaml:"backends" json:"backends"`
+	MaxCost  float64   `yaml:"max_cost_1m" json:"max_cost_1m"`
+	Required []string  `yaml:"required_capabilities" json:"required_capabilities"`
 }
 
 type RuleMatch struct {
-	CallType    string `yaml:"call_type"`
-	Service     string `yaml:"service"`
-	Tier        int    `yaml:"tier"`
-	Model       string `yaml:"model"`
-	LoRA        string `yaml:"lora"`
-	Priority    string `yaml:"priority_level"`
-	ContentType string `yaml:"content_type"`
+	CallType    string `yaml:"call_type" json:"call_type"`
+	Service     string `yaml:"service" json:"service"`
+	Tier        int    `yaml:"tier" json:"tier"`
+	Model       string `yaml:"model" json:"model"`
+	LoRA        string `yaml:"lora" json:"lora"`
+	Priority    string `yaml:"priority_level" json:"priority_level"`
+	ContentType string `yaml:"content_type" json:"content_type"`
 }
 
 type BudgetConfig struct {
-	DailyLimitUSD   float64 `yaml:"daily_limit_usd"`
-	Action          string  `yaml:"action"` // reject, downgrade
-	DowngradeTarget string  `yaml:"downgrade_target"`
+	DailyLimitUSD   float64 `yaml:"daily_limit_usd" json:"daily_limit_usd"`
+	Action          string  `yaml:"action" json:"action"`
+	DowngradeTarget string  `yaml:"downgrade_target" json:"downgrade_target"`
 }
 
 type BatchingConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	WindowMS       int      `yaml:"window_ms"`
-	MaxBatchSize   int      `yaml:"max_batch_size"`
-	PriorityBypass []string `yaml:"priority_bypass"`
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	WindowMS       int      `yaml:"window_ms" json:"window_ms"`
+	MaxBatchSize   int      `yaml:"max_batch_size" json:"max_batch_size"`
+	PriorityBypass []string `yaml:"priority_bypass" json:"priority_bypass"`
 }
 
 type DefaultsConfig struct {
