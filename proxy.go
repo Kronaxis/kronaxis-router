@@ -221,25 +221,55 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logRequest(meta, routeResult, inputTokens, outputTokens, latency, success, "")
 }
 
-// forwardToBackend sends a request to the selected backend.
+// forwardToBackend sends a request to the selected backend and tracks errors
+// for health scoring (including cloud backends that skip periodic health checks).
 func forwardToBackend(
 	backend *Backend,
-	modelName string,
+	_ string,
 	body []byte,
 	req *ChatRequest,
-	meta RouteRequest,
+	_ RouteRequest,
 ) (int, map[string]string, []byte, error) {
 	backend.ActiveReqs.Add(1)
 	defer backend.ActiveReqs.Add(-1)
 
+	var statusCode int
+	var headers map[string]string
+	var respBody []byte
+	var err error
+
 	switch backend.Config.Type {
 	case "gemini":
-		return forwardToGemini(backend, body, req)
+		statusCode, headers, respBody, err = forwardToGemini(backend, body, req)
 	case "ollama":
-		return forwardToOllama(backend, body, req)
+		statusCode, headers, respBody, err = forwardToOllama(backend, body, req)
 	default:
-		return forwardToOpenAI(backend, body)
+		statusCode, headers, respBody, err = forwardToOpenAI(backend, body)
 	}
+
+	// Track errors for health scoring (covers cloud backends too)
+	backend.mu.Lock()
+	if err != nil || statusCode >= 500 {
+		backend.Failures++
+		if backend.Failures >= 5 {
+			if backend.Status != StatusDown {
+				logger.Printf("backend %s marked DOWN (request errors: %d)", backend.Config.Name, backend.Failures)
+			}
+			backend.Status = StatusDown
+		} else if backend.Failures >= 2 {
+			backend.Status = StatusDegraded
+		}
+	} else {
+		// Successful request: reset failure counter, mark healthy
+		if backend.Status != StatusHealthy {
+			logger.Printf("backend %s recovered via successful request", backend.Config.Name)
+		}
+		backend.Failures = 0
+		backend.Status = StatusHealthy
+	}
+	backend.mu.Unlock()
+
+	return statusCode, headers, respBody, err
 }
 
 // forwardToOpenAI sends to an OpenAI-compatible endpoint (vLLM, OpenAI, etc.)
@@ -275,7 +305,7 @@ func forwardToOpenAI(backend *Backend, body []byte) (int, map[string]string, []b
 // forwardToGemini transforms the request to Gemini's REST format.
 func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[string]string, []byte, error) {
 	model := backend.Config.ModelName
-	url := backend.Config.URL + "/models/" + model + ":generateContent?key=" + backend.Config.APIKey
+	url := backend.Config.URL + "/models/" + model + ":generateContent"
 
 	// Transform OpenAI format to Gemini format
 	geminiReq := buildGeminiRequest(req)
@@ -289,6 +319,10 @@ func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 		return 0, nil, nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// Use header-based auth to keep API key out of URLs and logs
+	if backend.Config.APIKey != "" {
+		httpReq.Header.Set("x-goog-api-key", backend.Config.APIKey)
+	}
 
 	resp, err := llmClient.Do(httpReq)
 	if err != nil {
@@ -301,8 +335,18 @@ func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 		return 0, nil, nil, err
 	}
 
+	if resp.StatusCode >= 500 {
+		// Server error: treat as backend failure for failover
+		return resp.StatusCode, nil, respBody, fmt.Errorf("gemini server error %d", resp.StatusCode)
+	}
 	if resp.StatusCode >= 400 {
-		return resp.StatusCode, nil, respBody, fmt.Errorf("gemini error %d", resp.StatusCode)
+		// Client error (429 rate limit, 403 auth, etc.): pass through to caller
+		errResp := ChatResponse{
+			ID: "chatcmpl-kronaxis", Object: "chat.completion", Created: time.Now().Unix(), Model: model,
+			Choices: []ChatChoice{{Index: 0, Message: ChatMessage{Role: "assistant", Content: string(respBody)}, FinishReason: "error"}},
+		}
+		result, _ := json.Marshal(errResp)
+		return resp.StatusCode, map[string]string{"Content-Type": "application/json"}, result, nil
 	}
 
 	// Transform Gemini response back to OpenAI format
@@ -350,10 +394,12 @@ func buildGeminiRequest(req *ChatRequest) geminiRequest {
 		}
 	}
 
+	var systemParts []geminiPart
 	for _, msg := range req.Messages {
 		content := messageToGeminiContent(msg)
 		if msg.Role == "system" {
-			gr.SystemInstruction = &content
+			// Concatenate multiple system messages
+			systemParts = append(systemParts, content.Parts...)
 		} else {
 			role := "user"
 			if msg.Role == "assistant" {
@@ -362,6 +408,9 @@ func buildGeminiRequest(req *ChatRequest) geminiRequest {
 			content.Role = role
 			gr.Contents = append(gr.Contents, content)
 		}
+	}
+	if len(systemParts) > 0 {
+		gr.SystemInstruction = &geminiContent{Parts: systemParts}
 	}
 
 	return gr
@@ -421,7 +470,12 @@ type geminiResponse struct {
 
 func parseGeminiResponse(body []byte, model string) ChatResponse {
 	var gr geminiResponse
-	json.Unmarshal(body, &gr)
+	if err := json.Unmarshal(body, &gr); err != nil {
+		return ChatResponse{
+			ID: "chatcmpl-kronaxis", Object: "chat.completion", Created: time.Now().Unix(), Model: model,
+			Choices: []ChatChoice{{Index: 0, Message: ChatMessage{Role: "assistant", Content: "error parsing gemini response: " + err.Error()}, FinishReason: "error"}},
+		}
+	}
 
 	resp := ChatResponse{
 		ID:      "chatcmpl-kronaxis",
@@ -497,14 +551,22 @@ func forwardToOllama(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 		return 0, nil, nil, err
 	}
 
+	if resp.StatusCode >= 400 {
+		return resp.StatusCode, nil, respBody, fmt.Errorf("ollama error %d", resp.StatusCode)
+	}
+
 	// Transform Ollama response to OpenAI format
 	var ollamaResp struct {
 		Message struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"message"`
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
-	json.Unmarshal(respBody, &ollamaResp)
+	if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
+		return 0, nil, nil, fmt.Errorf("failed to parse ollama response: %w", err)
+	}
 
 	openAIResp := ChatResponse{
 		ID:      "chatcmpl-kronaxis",
@@ -517,6 +579,13 @@ func forwardToOllama(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 			FinishReason: "stop",
 		}},
 	}
+	if ollamaResp.PromptEvalCount > 0 || ollamaResp.EvalCount > 0 {
+		openAIResp.Usage = &ChatUsage{
+			PromptTokens:     ollamaResp.PromptEvalCount,
+			CompletionTokens: ollamaResp.EvalCount,
+			TotalTokens:      ollamaResp.PromptEvalCount + ollamaResp.EvalCount,
+		}
+	}
 	result, _ := json.Marshal(openAIResp)
 	return 200, map[string]string{"Content-Type": "application/json"}, result, nil
 }
@@ -524,7 +593,7 @@ func forwardToOllama(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 // handleStreaming proxies SSE responses for real-time use cases.
 func handleStreaming(
 	w http.ResponseWriter,
-	r *http.Request,
+	_ *http.Request,
 	route RouteResult,
 	body []byte,
 	req *ChatRequest,
@@ -534,6 +603,33 @@ func handleStreaming(
 	backend := route.Backend
 	backend.ActiveReqs.Add(1)
 	defer backend.ActiveReqs.Add(-1)
+
+	// Only OpenAI-compatible backends support streaming via SSE
+	if backend.Config.Type == "gemini" || backend.Config.Type == "ollama" {
+		// Fall back to non-streaming: send request, return full response
+		statusCode, respHeaders, respBody, err := forwardToBackend(backend, route.ModelName, body, req, meta)
+		latency := time.Since(start)
+		if err != nil {
+			recordStat(meta, route, latency, false)
+			logRequest(meta, route, 0, 0, latency, false, err.Error())
+			writeErrorJSON(w, 502, "backend error: "+err.Error())
+			return
+		}
+		var chatResp ChatResponse
+		json.Unmarshal(respBody, &chatResp)
+		inputTokens, outputTokens := estimateTokens(req, &chatResp)
+		responseBody := postProcessResponse(respBody, backend)
+		for k, v := range respHeaders {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(responseBody)
+		success := statusCode < 400
+		recordStat(meta, route, latency, success)
+		logRequest(meta, route, inputTokens, outputTokens, latency, success, "")
+		return
+	}
 
 	url := backend.Config.URL + "/v1/chat/completions"
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -565,7 +661,8 @@ func handleStreaming(
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(200)
 
-	// Buffer for think tag stripping in streaming mode
+	// Track accumulated content length for token estimation
+	var totalOutputBytes int
 	buf := make([]byte, 4096)
 	inThinkBlock := false
 	var thinkBuf strings.Builder
@@ -574,11 +671,9 @@ func handleStreaming(
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			chunk := string(buf[:n])
-
-			// Strip think tags from streaming content
 			chunk, inThinkBlock, thinkBuf = stripThinkTagsStreaming(chunk, inThinkBlock, thinkBuf)
-
 			if chunk != "" {
+				totalOutputBytes += len(chunk)
 				w.Write([]byte(chunk))
 				flusher.Flush()
 			}
@@ -588,12 +683,23 @@ func handleStreaming(
 		}
 	}
 
+	// Estimate tokens for cost tracking
+	inputBytes := 0
+	for _, msg := range req.Messages {
+		if s, ok := msg.Content.(string); ok {
+			inputBytes += len(s)
+		}
+	}
+	inputTokens := inputBytes / 4
+	outputTokens := totalOutputBytes / 4
+
 	latency := time.Since(start)
-	logRequest(meta, route, 0, 0, latency, true, "")
+	recordStat(meta, route, latency, true)
+	logRequest(meta, route, inputTokens, outputTokens, latency, true, "")
 }
 
 // postProcessResponse handles think tag stripping and content branding.
-func postProcessResponse(body []byte, backend *Backend) []byte {
+func postProcessResponse(body []byte, _ *Backend) []byte {
 	var resp ChatResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return body // Not valid JSON, return as-is

@@ -90,8 +90,8 @@ func main() {
 	mux.HandleFunc("/api/stats", handleStats)
 	registerUI(mux)
 
-	// Wrap with middleware
-	handler := corsMiddleware(loggingMiddleware(mux))
+	// Wrap with middleware (auth -> CORS -> logging)
+	handler := corsMiddleware(authMiddleware(loggingMiddleware(mux)))
 
 	srv := &http.Server{
 		Addr:         ":" + port,

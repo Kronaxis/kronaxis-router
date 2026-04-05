@@ -3,8 +3,12 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
+
+var apiToken = os.Getenv("ROUTER_API_TOKEN")
 
 // extractHeaders pulls Kronaxis-specific routing metadata from request headers.
 func extractHeaders(r *http.Request) RouteRequest {
@@ -84,4 +88,38 @@ func (sw *statusWriter) Flush() {
 	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// authMiddleware protects /api/* endpoints with a bearer token.
+// If ROUTER_API_TOKEN is unset, all requests are allowed (open access).
+// The UI (/) and proxy endpoint (/v1/) are never gated.
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for non-API paths (UI, health, proxy)
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// No token configured: open access
+		if apiToken == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Check Authorization header
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeErrorJSON(w, 401, "authentication required: set Authorization: Bearer <token>")
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != apiToken {
+			writeErrorJSON(w, 403, "invalid token")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
