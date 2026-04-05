@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kronaxis Router</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; }
+  .tab-active { border-bottom: 2px solid #38bdf8; color: #38bdf8; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; }
+  .badge-healthy { background: #064e3b; color: #6ee7b7; }
+  .badge-degraded { background: #78350f; color: #fbbf24; }
+  .badge-down { background: #7f1d1d; color: #fca5a5; }
+  /* Flow canvas */
+  #flow-canvas { position: relative; min-height: 600px; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem; overflow: hidden; }
+  .flow-node { position: absolute; min-width: 180px; border-radius: 0.5rem; padding: 12px; cursor: grab; user-select: none; z-index: 10; }
+  .flow-node:active { cursor: grabbing; }
+  .flow-node.request-node { background: #1e3a5f; border: 2px solid #38bdf8; }
+  .flow-node.backend-node { background: #1e293b; border: 2px solid #64748b; }
+  .flow-node.backend-node.healthy { border-color: #22c55e; }
+  .flow-node.backend-node.down { border-color: #ef4444; opacity: 0.5; }
+  .flow-connector { position: absolute; pointer-events: none; z-index: 5; }
+  .node-port { width: 12px; height: 12px; border-radius: 50%; background: #64748b; border: 2px solid #1e293b; position: absolute; cursor: crosshair; z-index: 15; }
+  .node-port.output { right: -6px; top: 50%; transform: translateY(-50%); }
+  .node-port.input { left: -6px; top: 50%; transform: translateY(-50%); }
+  /* Pulse animation for active requests */
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .pulse { animation: pulse 2s infinite; }
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; display: flex; align-items: center; justify-content: center; }
+  .modal-content { background: #1e293b; border: 1px solid #475569; border-radius: 0.75rem; max-width: 600px; width: 95%; max-height: 80vh; overflow-y: auto; padding: 24px; }
+  /* YAML editor */
+  #yaml-editor { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.5; tab-size: 2; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 0.5rem; padding: 16px; width: 100%; min-height: 400px; resize: vertical; }
+  /* Cost bar chart */
+  .cost-bar { height: 24px; border-radius: 4px; transition: width 0.5s ease; min-width: 2px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <div class="text-xl font-bold text-sky-400">Kronaxis Router</div>
+    <span class="text-xs text-slate-500" id="version-badge">v-</span>
+  </div>
+  <div class="flex items-center gap-4 text-sm">
+    <span id="health-dot" class="w-2.5 h-2.5 rounded-full bg-green-500 inline-block"></span>
+    <span class="text-slate-400" id="uptime-display">-</span>
+  </div>
+</header>
+
+<!-- Tabs -->
+<nav class="border-b border-slate-700 px-6 flex gap-1">
+  <button class="tab-btn tab-active px-4 py-3 text-sm font-medium" data-tab="dashboard">Dashboard</button>
+  <button class="tab-btn px-4 py-3 text-sm font-medium text-slate-400 hover:text-white" data-tab="flow">Flow Builder</button>
+  <button class="tab-btn px-4 py-3 text-sm font-medium text-slate-400 hover:text-white" data-tab="backends">Backends</button>
+  <button class="tab-btn px-4 py-3 text-sm font-medium text-slate-400 hover:text-white" data-tab="costs">Costs</button>
+  <button class="tab-btn px-4 py-3 text-sm font-medium text-slate-400 hover:text-white" data-tab="config">Config</button>
+</nav>
+
+<!-- Tab Content -->
+<main class="p-6">
+
+  <!-- ═══════ DASHBOARD TAB ═══════ -->
+  <div id="tab-dashboard" class="tab-content">
+    <!-- Metric cards row -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Total Requests</div>
+        <div class="text-2xl font-bold mt-1" id="stat-total">0</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Active Now</div>
+        <div class="text-2xl font-bold mt-1 text-sky-400" id="stat-active">0</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Errors</div>
+        <div class="text-2xl font-bold mt-1 text-red-400" id="stat-errors">0</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Avg Latency</div>
+        <div class="text-2xl font-bold mt-1" id="stat-latency">0ms</div>
+      </div>
+    </div>
+
+    <!-- Two-column: backends health + top rules -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="card p-5">
+        <h3 class="font-semibold mb-3 text-slate-300">Backend Health</h3>
+        <div id="dash-backends" class="space-y-2"></div>
+      </div>
+      <div class="card p-5">
+        <h3 class="font-semibold mb-3 text-slate-300">Requests by Service</h3>
+        <div id="dash-services" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <!-- Cost today -->
+    <div class="card p-5 mt-6">
+      <h3 class="font-semibold mb-3 text-slate-300">Today's Cost by Service</h3>
+      <div id="dash-costs" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <!-- ═══════ FLOW BUILDER TAB ═══════ -->
+  <div id="tab-flow" class="tab-content hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">Routing Flow</h2>
+      <div class="flex gap-2">
+        <button onclick="addRuleNode()" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 rounded text-sm font-medium">+ Add Rule</button>
+        <button onclick="refreshFlow()" class="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm font-medium">Refresh</button>
+      </div>
+    </div>
+
+    <div class="flex gap-4">
+      <!-- Sidebar: backend palette -->
+      <div class="w-48 shrink-0">
+        <div class="card p-3">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">Backends</div>
+          <div id="flow-palette" class="space-y-1.5"></div>
+        </div>
+        <div class="card p-3 mt-3">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">Legend</div>
+          <div class="text-xs space-y-1">
+            <div class="flex items-center gap-2"><div class="w-3 h-3 rounded bg-sky-500"></div> Request Rule</div>
+            <div class="flex items-center gap-2"><div class="w-3 h-3 rounded bg-green-500"></div> Healthy Backend</div>
+            <div class="flex items-center gap-2"><div class="w-3 h-3 rounded bg-red-500"></div> Down Backend</div>
+            <div class="flex items-center gap-2"><svg width="24" height="12"><line x1="0" y1="6" x2="24" y2="6" stroke="#475569" stroke-width="2"/></svg> Route (priority order)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div class="flex-1">
+        <div id="flow-canvas">
+          <svg id="flow-svg" class="absolute inset-0 w-full h-full" style="z-index:5;"></svg>
+        </div>
+      </div>
+
+      <!-- Properties panel -->
+      <div class="w-64 shrink-0">
+        <div class="card p-4" id="props-panel">
+          <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">Properties</div>
+          <div id="props-content" class="text-sm text-slate-400">Click a rule or backend to view properties</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ BACKENDS TAB ═══════ -->
+  <div id="tab-backends" class="tab-content hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">Backends</h2>
+      <button onclick="showAddBackend()" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 rounded text-sm font-medium">+ Add Backend</button>
+    </div>
+    <div id="backends-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  </div>
+
+  <!-- ═══════ COSTS TAB ═══════ -->
+  <div id="tab-costs" class="tab-content hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">Cost Analysis</h2>
+      <div class="flex gap-2">
+        <select id="cost-period" class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm" onchange="loadCosts()">
+          <option value="today">Today</option>
+          <option value="week">Last 7 days</option>
+          <option value="month">Last 30 days</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Total Spend</div>
+        <div class="text-2xl font-bold mt-1 text-green-400" id="cost-total">$0.00</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Requests</div>
+        <div class="text-2xl font-bold mt-1" id="cost-requests">0</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Avg Cost/Request</div>
+        <div class="text-2xl font-bold mt-1" id="cost-avg">$0.00</div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-6">
+      <h3 class="font-semibold mb-3 text-slate-300">Cost by Service</h3>
+      <div id="cost-by-service"></div>
+    </div>
+
+    <div class="card p-5">
+      <h3 class="font-semibold mb-3 text-slate-300">Cost by Model</h3>
+      <div id="cost-by-model"></div>
+    </div>
+
+    <div class="card p-5 mt-6">
+      <h3 class="font-semibold mb-3 text-slate-300">Breakdown</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-slate-400 border-b border-slate-700">
+            <th class="pb-2 pr-4">Service</th><th class="pb-2 pr-4">Model</th><th class="pb-2 pr-4">Call Type</th>
+            <th class="pb-2 pr-4 text-right">Requests</th><th class="pb-2 pr-4 text-right">Input Tokens</th>
+            <th class="pb-2 pr-4 text-right">Output Tokens</th><th class="pb-2 pr-4 text-right">Cost</th>
+            <th class="pb-2 text-right">Avg Latency</th>
+          </tr></thead>
+          <tbody id="cost-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ CONFIG TAB ═══════ -->
+  <div id="tab-config" class="tab-content hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold">Configuration</h2>
+      <div class="flex gap-2">
+        <button onclick="loadYAML()" class="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm font-medium">Reload from Disk</button>
+        <button onclick="saveYAML()" class="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium">Save &amp; Apply</button>
+      </div>
+    </div>
+    <textarea id="yaml-editor" spellcheck="false"></textarea>
+  </div>
+
+</main>
+
+<!-- Modal container -->
+<div id="modal" class="modal-overlay hidden" onclick="if(event.target===this)closeModal()">
+  <div class="modal-content" id="modal-body"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════
+let backends = [], rules = [], budgets = {}, stats = {}, costData = {};
+let flowNodes = []; // {id, type, x, y, data}
+let flowEdges = []; // {from, to, label}
+let selectedNode = null;
+let dragging = null, dragOffX = 0, dragOffY = 0;
+
+// ═══════════════════════════════════════════════════════════════
+// TAB NAVIGATION
+// ═══════════════════════════════════════════════════════════════
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => { b.classList.remove('tab-active'); b.classList.add('text-slate-400'); });
+    btn.classList.add('tab-active'); btn.classList.remove('text-slate-400');
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+    document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
+    if (btn.dataset.tab === 'flow') refreshFlow();
+    if (btn.dataset.tab === 'costs') loadCosts();
+    if (btn.dataset.tab === 'config') loadYAML();
+    if (btn.dataset.tab === 'backends') loadBackends();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// API CALLS
+// ═══════════════════════════════════════════════════════════════
+const api = (path, opts) => fetch(path, opts).then(r => {
+  if (r.headers.get('content-type')?.includes('yaml')) return r.text();
+  return r.json();
+});
+
+async function refresh() {
+  try {
+    const [h, s, c, r, b] = await Promise.all([
+      api('/health'), api('/api/stats'), api('/api/costs'),
+      api('/api/rules'), api('/api/budgets')
+    ]);
+    backends = h.backends || [];
+    stats = s;
+    costData = c;
+    rules = r || [];
+    budgets = b || {};
+    document.getElementById('version-badge').textContent = 'v' + h.version;
+    document.getElementById('uptime-display').textContent = formatUptime(h.uptime_seconds);
+    document.getElementById('health-dot').className = 'w-2.5 h-2.5 rounded-full inline-block ' +
+      (h.backends_healthy === h.backends_total ? 'bg-green-500' : 'bg-yellow-500');
+    renderDashboard();
+  } catch(e) {
+    document.getElementById('health-dot').className = 'w-2.5 h-2.5 rounded-full inline-block bg-red-500';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+function renderDashboard() {
+  document.getElementById('stat-total').textContent = (stats.total_requests || 0).toLocaleString();
+  document.getElementById('stat-active').textContent = stats.active_requests || 0;
+  document.getElementById('stat-errors').textContent = stats.total_errors || 0;
+  document.getElementById('stat-latency').textContent = Math.round(stats.avg_latency_ms || 0) + 'ms';
+
+  // Backend health
+  const bEl = document.getElementById('dash-backends');
+  bEl.innerHTML = backends.map(b => `
+    <div class="flex items-center justify-between py-1.5">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full ${b.status==='healthy'?'bg-green-500':b.status==='degraded'?'bg-yellow-500':'bg-red-500'}"></span>
+        <span class="text-sm">${b.name}</span>
+        <span class="text-xs text-slate-500">${b.type}</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs text-slate-400">
+        <span>${b.active_requests} active</span>
+        <span>${b.latency_ms}ms</span>
+        <span class="px-1.5 py-0.5 rounded text-xs badge-${b.status}">${b.status}</span>
+      </div>
+    </div>
+  `).join('');
+
+  // Requests by service
+  const sEl = document.getElementById('dash-services');
+  const svcs = stats.requests_by_service || {};
+  const maxReqs = Math.max(...Object.values(svcs), 1);
+  sEl.innerHTML = Object.entries(svcs).sort((a,b) => b[1]-a[1]).map(([svc, count]) => `
+    <div class="flex items-center gap-3">
+      <span class="text-sm w-24 shrink-0">${svc}</span>
+      <div class="flex-1 bg-slate-700 rounded h-5 overflow-hidden">
+        <div class="cost-bar bg-sky-600 h-full" style="width:${count/maxReqs*100}%"></div>
+      </div>
+      <span class="text-xs text-slate-400 w-12 text-right">${count}</span>
+    </div>
+  `).join('');
+
+  // Costs
+  const cEl = document.getElementById('dash-costs');
+  const daily = costData.daily || {};
+  const maxCost = Math.max(...Object.values(daily), 0.01);
+  cEl.innerHTML = Object.entries(daily).sort((a,b) => b[1]-a[1]).map(([svc, cost]) => {
+    const budget = budgets[svc] || budgets.default || {};
+    const limit = budget.daily_limit_usd || 0;
+    const pct = limit ? (cost/limit*100).toFixed(0) : '-';
+    return `
+      <div class="flex items-center gap-3">
+        <span class="text-sm w-24 shrink-0">${svc}</span>
+        <div class="flex-1 bg-slate-700 rounded h-5 overflow-hidden">
+          <div class="cost-bar ${cost/limit>0.9?'bg-red-500':cost/limit>0.7?'bg-yellow-500':'bg-green-600'} h-full" style="width:${cost/maxCost*100}%"></div>
+        </div>
+        <span class="text-xs text-slate-400 w-32 text-right">$${cost.toFixed(4)} / $${limit.toFixed(2)} (${pct}%)</span>
+      </div>
+    `;
+  }).join('') || '<div class="text-sm text-slate-500">No cost data yet</div>';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FLOW BUILDER
+// ═══════════════════════════════════════════════════════════════
+function refreshFlow() {
+  buildFlowNodes();
+  renderFlow();
+}
+
+function buildFlowNodes() {
+  flowNodes = [];
+  flowEdges = [];
+
+  // Request entry node
+  flowNodes.push({ id: 'request', type: 'request', x: 30, y: 250, data: { label: 'Incoming Request' }});
+
+  // Rule nodes in the middle column
+  rules.forEach((rule, i) => {
+    const y = 40 + i * 100;
+    flowNodes.push({
+      id: 'rule-' + rule.name,
+      type: 'rule',
+      x: 280,
+      y: y,
+      data: { rule: rule, label: rule.name }
+    });
+    // Edge from request to each rule
+    flowEdges.push({ from: 'request', to: 'rule-' + rule.name, label: 'P' + rule.priority });
+  });
+
+  // Backend nodes on the right
+  const usedBackends = new Set();
+  rules.forEach(r => (r.backends || []).forEach(b => usedBackends.add(b)));
+  // Also add all configured backends
+  backends.forEach(b => usedBackends.add(b.name));
+
+  const backendList = [...usedBackends];
+  backendList.forEach((name, i) => {
+    const info = backends.find(b => b.name === name) || { name, status: 'unknown', type: '?' };
+    const y = 40 + i * 80;
+    flowNodes.push({
+      id: 'backend-' + name,
+      type: 'backend',
+      x: 580,
+      y: y,
+      data: { backend: info, label: name }
+    });
+  });
+
+  // Edges from rules to their backends
+  rules.forEach(rule => {
+    (rule.backends || []).forEach((bName, idx) => {
+      flowEdges.push({
+        from: 'rule-' + rule.name,
+        to: 'backend-' + bName,
+        label: '' + (idx + 1),
+      });
+    });
+  });
+}
+
+function renderFlow() {
+  const canvas = document.getElementById('flow-canvas');
+  const svg = document.getElementById('flow-svg');
+
+  // Remove old nodes (keep SVG)
+  canvas.querySelectorAll('.flow-node').forEach(n => n.remove());
+  svg.innerHTML = '';
+
+  // Set canvas height
+  const maxY = Math.max(...flowNodes.map(n => n.y + 80), 600);
+  canvas.style.height = maxY + 'px';
+
+  // Render nodes
+  flowNodes.forEach(node => {
+    const el = document.createElement('div');
+    el.className = 'flow-node ' + (node.type === 'request' ? 'request-node' : node.type === 'rule' ? 'request-node' : 'backend-node');
+    if (node.type === 'backend') {
+      const status = node.data.backend?.status || 'unknown';
+      el.classList.add(status === 'healthy' ? 'healthy' : status === 'down' ? 'down' : '');
+    }
+    el.style.left = node.x + 'px';
+    el.style.top = node.y + 'px';
+    el.dataset.nodeId = node.id;
+
+    if (node.type === 'request') {
+      el.innerHTML = `<div class="text-xs text-sky-300 font-bold mb-1">ENTRY</div><div class="text-sm">${node.data.label}</div>`;
+    } else if (node.type === 'rule') {
+      const r = node.data.rule;
+      const matchParts = [];
+      if (r.match?.service) matchParts.push('svc:' + r.match.service);
+      if (r.match?.tier) matchParts.push('tier:' + r.match.tier);
+      if (r.match?.call_type) matchParts.push(r.match.call_type);
+      if (r.match?.priority_level) matchParts.push(r.match.priority_level);
+      if (r.match?.content_type) matchParts.push(r.match.content_type);
+      el.innerHTML = `
+        <div class="text-xs text-sky-300 font-bold mb-1">RULE (P${r.priority})</div>
+        <div class="text-sm font-medium">${r.name}</div>
+        <div class="text-xs text-slate-400 mt-1">${matchParts.join(' + ') || 'all requests'}</div>
+        ${r.max_cost_1m ? '<div class="text-xs text-green-400 mt-0.5">max $' + r.max_cost_1m + '/1M</div>' : ''}
+      `;
+    } else {
+      const b = node.data.backend;
+      el.innerHTML = `
+        <div class="flex items-center gap-2 mb-1">
+          <span class="w-2 h-2 rounded-full ${b.status==='healthy'?'bg-green-500':'bg-red-500'}"></span>
+          <span class="text-sm font-medium">${b.name}</span>
+        </div>
+        <div class="text-xs text-slate-400">${b.type || '?'}</div>
+        <div class="text-xs text-slate-500">${b.active_requests || 0} active</div>
+      `;
+    }
+
+    // Drag handling
+    el.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+      dragging = node;
+      const rect = el.getBoundingClientRect();
+      dragOffX = e.clientX - rect.left;
+      dragOffY = e.clientY - rect.top;
+      e.preventDefault();
+    });
+
+    el.addEventListener('click', () => showNodeProps(node));
+
+    canvas.appendChild(el);
+  });
+
+  // Draw edges as SVG lines
+  drawEdges();
+
+  // Global mouse events for dragging
+  document.addEventListener('mousemove', onFlowMouseMove);
+  document.addEventListener('mouseup', onFlowMouseUp);
+
+  // Render palette
+  renderPalette();
+}
+
+function drawEdges() {
+  const svg = document.getElementById('flow-svg');
+  svg.innerHTML = '';
+
+  flowEdges.forEach(edge => {
+    const fromNode = flowNodes.find(n => n.id === edge.from);
+    const toNode = flowNodes.find(n => n.id === edge.to);
+    if (!fromNode || !toNode) return;
+
+    const fromEl = document.querySelector(`[data-node-id="${edge.from}"]`);
+    const toEl = document.querySelector(`[data-node-id="${edge.to}"]`);
+    if (!fromEl || !toEl) return;
+
+    const x1 = fromNode.x + fromEl.offsetWidth;
+    const y1 = fromNode.y + fromEl.offsetHeight / 2;
+    const x2 = toNode.x;
+    const y2 = toNode.y + toEl.offsetHeight / 2;
+
+    // Bezier curve
+    const mx = (x1 + x2) / 2;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`);
+    path.setAttribute('stroke', '#475569');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('fill', 'none');
+    svg.appendChild(path);
+
+    // Label
+    if (edge.label) {
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', mx);
+      text.setAttribute('y', (y1 + y2) / 2 - 6);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', '#64748b');
+      text.setAttribute('font-size', '10');
+      text.textContent = edge.label;
+      svg.appendChild(text);
+    }
+  });
+}
+
+function onFlowMouseMove(e) {
+  if (!dragging) return;
+  const canvas = document.getElementById('flow-canvas');
+  const rect = canvas.getBoundingClientRect();
+  dragging.x = Math.max(0, e.clientX - rect.left - dragOffX);
+  dragging.y = Math.max(0, e.clientY - rect.top - dragOffY);
+
+  const el = document.querySelector(`[data-node-id="${dragging.id}"]`);
+  if (el) {
+    el.style.left = dragging.x + 'px';
+    el.style.top = dragging.y + 'px';
+  }
+  drawEdges();
+}
+
+function onFlowMouseUp() { dragging = null; }
+
+function renderPalette() {
+  const el = document.getElementById('flow-palette');
+  el.innerHTML = backends.map(b => `
+    <div class="flex items-center gap-2 p-1.5 rounded bg-slate-800 text-xs cursor-pointer hover:bg-slate-700"
+         onclick="showNodeProps(flowNodes.find(n=>n.id==='backend-${b.name}'))">
+      <span class="w-2 h-2 rounded-full ${b.status==='healthy'?'bg-green-500':'bg-red-500'}"></span>
+      ${b.name}
+    </div>
+  `).join('');
+}
+
+function showNodeProps(node) {
+  if (!node) return;
+  selectedNode = node;
+  const el = document.getElementById('props-content');
+
+  if (node.type === 'rule') {
+    const r = node.data.rule;
+    el.innerHTML = `
+      <div class="space-y-3">
+        <div><span class="text-xs text-slate-400">Name</span><div class="font-medium">${r.name}</div></div>
+        <div><span class="text-xs text-slate-400">Priority</span><div>${r.priority}</div></div>
+        <div><span class="text-xs text-slate-400">Match</span><pre class="text-xs bg-slate-800 p-2 rounded mt-1">${JSON.stringify(r.match, null, 2)}</pre></div>
+        <div><span class="text-xs text-slate-400">Backends</span><div>${(r.backends||[]).join(' → ')}</div></div>
+        ${r.max_cost_1m ? '<div><span class="text-xs text-slate-400">Cost Ceiling</span><div>$' + r.max_cost_1m + '/1M tokens</div></div>' : ''}
+        ${r.required_capabilities?.length ? '<div><span class="text-xs text-slate-400">Required</span><div>' + r.required_capabilities.join(', ') + '</div></div>' : ''}
+        <div class="flex gap-2 pt-2">
+          <button onclick="editRule('${r.name}')" class="px-2 py-1 bg-sky-600 rounded text-xs">Edit</button>
+          <button onclick="deleteRule('${r.name}')" class="px-2 py-1 bg-red-600 rounded text-xs">Delete</button>
+        </div>
+      </div>
+    `;
+  } else if (node.type === 'backend') {
+    const b = node.data.backend;
+    el.innerHTML = `
+      <div class="space-y-3">
+        <div><span class="text-xs text-slate-400">Name</span><div class="font-medium">${b.name}</div></div>
+        <div><span class="text-xs text-slate-400">Status</span><div><span class="px-1.5 py-0.5 rounded text-xs badge-${b.status}">${b.status}</span></div></div>
+        <div><span class="text-xs text-slate-400">Type</span><div>${b.type}</div></div>
+        <div><span class="text-xs text-slate-400">URL</span><div class="text-xs break-all">${b.url}</div></div>
+        <div><span class="text-xs text-slate-400">Active Requests</span><div>${b.active_requests}</div></div>
+        <div><span class="text-xs text-slate-400">Latency</span><div>${b.latency_ms}ms</div></div>
+      </div>
+    `;
+  } else {
+    el.innerHTML = '<div class="text-slate-400">Entry point for all requests</div>';
+  }
+}
+
+function addRuleNode() {
+  showModal(`
+    <h3 class="text-lg font-semibold mb-4">Add Routing Rule</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-slate-400">Rule Name</label><input id="r-name" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="my-rule"></div>
+      <div><label class="text-xs text-slate-400">Priority (higher = first)</label><input id="r-priority" type="number" value="100" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm"></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-400">Service</label><input id="r-service" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="any"></div>
+        <div><label class="text-xs text-slate-400">Call Type</label><input id="r-calltype" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="any"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-400">Tier</label><input id="r-tier" type="number" value="0" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm"></div>
+        <div><label class="text-xs text-slate-400">Priority Level</label>
+          <select id="r-plevel" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm">
+            <option value="">Any</option><option>interactive</option><option>normal</option><option>background</option><option>bulk</option>
+          </select>
+        </div>
+      </div>
+      <div><label class="text-xs text-slate-400">Content Type</label>
+        <select id="r-ctype" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm">
+          <option value="">Any</option><option>text</option><option>vision</option>
+        </select>
+      </div>
+      <div><label class="text-xs text-slate-400">Backends (comma-separated, in priority order)</label>
+        <input id="r-backends" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="${backends.map(b=>b.name).join(', ')}">
+      </div>
+      <div><label class="text-xs text-slate-400">Max Cost per 1M tokens (0 = no limit)</label>
+        <input id="r-maxcost" type="number" step="0.01" value="0" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm">
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="closeModal()" class="px-3 py-1.5 bg-slate-600 rounded text-sm">Cancel</button>
+        <button onclick="saveNewRule()" class="px-3 py-1.5 bg-sky-600 rounded text-sm">Save Rule</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveNewRule() {
+  const rule = {
+    name: document.getElementById('r-name').value.trim(),
+    priority: parseInt(document.getElementById('r-priority').value) || 100,
+    match: {
+      service: document.getElementById('r-service').value.trim(),
+      call_type: document.getElementById('r-calltype').value.trim(),
+      tier: parseInt(document.getElementById('r-tier').value) || 0,
+      priority_level: document.getElementById('r-plevel').value,
+      content_type: document.getElementById('r-ctype').value,
+    },
+    backends: document.getElementById('r-backends').value.split(',').map(s => s.trim()).filter(Boolean),
+    max_cost_1m: parseFloat(document.getElementById('r-maxcost').value) || 0,
+  };
+  if (!rule.name) return alert('Rule name is required');
+  if (!rule.backends.length) return alert('At least one backend is required');
+
+  await api('/api/rules', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(rule) });
+  closeModal();
+  await refresh();
+  refreshFlow();
+}
+
+async function deleteRule(name) {
+  if (!confirm('Delete rule "' + name + '"?')) return;
+  await api('/api/rules?name=' + encodeURIComponent(name), { method: 'DELETE' });
+  await refresh();
+  refreshFlow();
+}
+
+function editRule(name) {
+  const rule = rules.find(r => r.name === name);
+  if (!rule) return;
+  // Populate form with existing values, then show modal
+  addRuleNode();
+  setTimeout(() => {
+    document.getElementById('r-name').value = rule.name;
+    document.getElementById('r-priority').value = rule.priority;
+    document.getElementById('r-service').value = rule.match?.service || '';
+    document.getElementById('r-calltype').value = rule.match?.call_type || '';
+    document.getElementById('r-tier').value = rule.match?.tier || 0;
+    document.getElementById('r-plevel').value = rule.match?.priority_level || '';
+    document.getElementById('r-ctype').value = rule.match?.content_type || '';
+    document.getElementById('r-backends').value = (rule.backends || []).join(', ');
+    document.getElementById('r-maxcost').value = rule.max_cost_1m || 0;
+    // Change save to PUT
+    const btn = document.querySelector('.modal-content button:last-child');
+    btn.textContent = 'Update Rule';
+    btn.onclick = async () => {
+      const updated = {
+        name: document.getElementById('r-name').value.trim(),
+        priority: parseInt(document.getElementById('r-priority').value) || 100,
+        match: {
+          service: document.getElementById('r-service').value.trim(),
+          call_type: document.getElementById('r-calltype').value.trim(),
+          tier: parseInt(document.getElementById('r-tier').value) || 0,
+          priority_level: document.getElementById('r-plevel').value,
+          content_type: document.getElementById('r-ctype').value,
+        },
+        backends: document.getElementById('r-backends').value.split(',').map(s=>s.trim()).filter(Boolean),
+        max_cost_1m: parseFloat(document.getElementById('r-maxcost').value) || 0,
+      };
+      await api('/api/rules', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(updated) });
+      closeModal();
+      await refresh();
+      refreshFlow();
+    };
+  }, 50);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BACKENDS VIEW
+// ═══════════════════════════════════════════════════════════════
+async function loadBackends() {
+  const h = await api('/health');
+  backends = h.backends || [];
+  renderBackends();
+}
+
+function renderBackends() {
+  const el = document.getElementById('backends-grid');
+  el.innerHTML = backends.map(b => `
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full ${b.status==='healthy'?'bg-green-500':b.status==='degraded'?'bg-yellow-500':'bg-red-500'}"></span>
+          <span class="font-medium">${b.name}</span>
+        </div>
+        <span class="px-2 py-0.5 rounded text-xs badge-${b.status}">${b.status}</span>
+      </div>
+      <div class="space-y-1.5 text-sm text-slate-400">
+        <div class="flex justify-between"><span>Type</span><span class="text-slate-200">${b.type}</span></div>
+        <div class="flex justify-between"><span>URL</span><span class="text-slate-200 text-xs truncate max-w-[200px]">${b.url}</span></div>
+        <div class="flex justify-between"><span>Active</span><span class="text-slate-200">${b.active_requests}</span></div>
+        <div class="flex justify-between"><span>Latency</span><span class="text-slate-200">${b.latency_ms}ms</span></div>
+        <div class="flex justify-between"><span>Last Check</span><span class="text-slate-200">${b.last_check_ms < 1000 ? 'just now' : Math.round(b.last_check_ms/1000) + 's ago'}</span></div>
+      </div>
+      <div class="mt-3 pt-3 border-t border-slate-700 flex gap-2">
+        <button onclick="removeBackend('${b.name}')" class="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function showAddBackend() {
+  showModal(`
+    <h3 class="text-lg font-semibold mb-4">Add Backend</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-slate-400">Name</label><input id="b-name" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="my-backend"></div>
+      <div><label class="text-xs text-slate-400">URL</label><input id="b-url" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="http://localhost:8000"></div>
+      <div><label class="text-xs text-slate-400">Type</label>
+        <select id="b-type" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm">
+          <option>vllm</option><option>gemini</option><option>openai</option><option>ollama</option>
+        </select>
+      </div>
+      <div><label class="text-xs text-slate-400">Model Name</label><input id="b-model" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="model-name"></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-400">Input Cost/1M</label><input id="b-costin" type="number" step="0.001" value="0.01" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm"></div>
+        <div><label class="text-xs text-slate-400">Output Cost/1M</label><input id="b-costout" type="number" step="0.001" value="0.01" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm"></div>
+      </div>
+      <div><label class="text-xs text-slate-400">API Key (optional)</label><input id="b-apikey" type="password" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="Leave empty if not needed"></div>
+      <div><label class="text-xs text-slate-400">Max Concurrent</label><input id="b-maxconc" type="number" value="10" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm"></div>
+      <div><label class="text-xs text-slate-400">Capabilities (comma-separated)</label><input id="b-caps" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="json_output, long_context, vision, lora_adapter"></div>
+      <div><label class="text-xs text-slate-400">LoRA Adapters (comma-separated)</label><input id="b-lora" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 mt-1 text-sm" placeholder="adapter1, adapter2"></div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="closeModal()" class="px-3 py-1.5 bg-slate-600 rounded text-sm">Cancel</button>
+        <button onclick="saveNewBackend()" class="px-3 py-1.5 bg-sky-600 rounded text-sm">Add Backend</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveNewBackend() {
+  const backend = {
+    name: document.getElementById('b-name').value.trim(),
+    url: document.getElementById('b-url').value.trim(),
+    type: document.getElementById('b-type').value,
+    model_name: document.getElementById('b-model').value.trim(),
+    cost_input_1m: parseFloat(document.getElementById('b-costin').value) || 0.01,
+    cost_output_1m: parseFloat(document.getElementById('b-costout').value) || 0.01,
+    api_key: document.getElementById('b-apikey').value.trim(),
+    max_concurrent: parseInt(document.getElementById('b-maxconc').value) || 10,
+    capabilities: document.getElementById('b-caps').value.split(',').map(s=>s.trim()).filter(Boolean),
+    lora_adapters: document.getElementById('b-lora').value.split(',').map(s=>s.trim()).filter(Boolean),
+  };
+  if (!backend.name || !backend.url) return alert('Name and URL are required');
+  await api('/api/backends', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(backend) });
+  closeModal();
+  await loadBackends();
+}
+
+async function removeBackend(name) {
+  if (!confirm('Remove backend "' + name + '"?')) return;
+  await api('/api/backends?name=' + encodeURIComponent(name), { method: 'DELETE' });
+  await loadBackends();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COSTS VIEW
+// ═══════════════════════════════════════════════════════════════
+async function loadCosts() {
+  const period = document.getElementById('cost-period').value;
+  costData = await api('/api/costs?period=' + period);
+  renderCosts();
+}
+
+function renderCosts() {
+  const breakdown = costData.breakdown || [];
+  let totalCost = 0, totalReqs = 0;
+  const bySvc = {}, byModel = {};
+
+  breakdown.forEach(row => {
+    totalCost += row.total_cost_usd;
+    totalReqs += row.request_count;
+    bySvc[row.service] = (bySvc[row.service] || 0) + row.total_cost_usd;
+    byModel[row.model] = (byModel[row.model] || 0) + row.total_cost_usd;
+  });
+
+  document.getElementById('cost-total').textContent = '$' + totalCost.toFixed(4);
+  document.getElementById('cost-requests').textContent = totalReqs.toLocaleString();
+  document.getElementById('cost-avg').textContent = totalReqs ? '$' + (totalCost / totalReqs).toFixed(6) : '$0.00';
+
+  // Bar charts
+  renderCostBars('cost-by-service', bySvc);
+  renderCostBars('cost-by-model', byModel);
+
+  // Table
+  const tbody = document.getElementById('cost-table-body');
+  tbody.innerHTML = breakdown.map(r => `
+    <tr class="border-b border-slate-800">
+      <td class="py-2 pr-4">${r.service}</td><td class="py-2 pr-4">${r.model}</td><td class="py-2 pr-4">${r.call_type}</td>
+      <td class="py-2 pr-4 text-right">${r.request_count.toLocaleString()}</td>
+      <td class="py-2 pr-4 text-right">${r.total_input_tokens.toLocaleString()}</td>
+      <td class="py-2 pr-4 text-right">${r.total_output_tokens.toLocaleString()}</td>
+      <td class="py-2 pr-4 text-right text-green-400">$${r.total_cost_usd.toFixed(4)}</td>
+      <td class="py-2 text-right">${Math.round(r.avg_latency_ms)}ms</td>
+    </tr>
+  `).join('');
+}
+
+function renderCostBars(elId, data) {
+  const el = document.getElementById(elId);
+  const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(...entries.map(e => e[1]), 0.001);
+  const colors = ['bg-sky-500', 'bg-emerald-500', 'bg-violet-500', 'bg-amber-500', 'bg-rose-500', 'bg-teal-500'];
+  el.innerHTML = entries.map(([name, cost], i) => `
+    <div class="flex items-center gap-3 mb-1.5">
+      <span class="text-sm w-28 shrink-0 truncate">${name}</span>
+      <div class="flex-1 bg-slate-700 rounded h-5 overflow-hidden">
+        <div class="cost-bar ${colors[i % colors.length]} h-full" style="width:${cost/max*100}%"></div>
+      </div>
+      <span class="text-xs text-slate-400 w-20 text-right">$${cost.toFixed(4)}</span>
+    </div>
+  `).join('') || '<div class="text-sm text-slate-500">No data</div>';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONFIG EDITOR
+// ═══════════════════════════════════════════════════════════════
+async function loadYAML() {
+  const yaml = await api('/api/config/yaml');
+  document.getElementById('yaml-editor').value = yaml;
+}
+
+async function saveYAML() {
+  const yaml = document.getElementById('yaml-editor').value;
+  try {
+    const res = await fetch('/api/config/yaml', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/yaml' },
+      body: yaml
+    });
+    const data = await res.json();
+    if (res.ok) {
+      alert('Config saved and applied');
+      await refresh();
+    } else {
+      alert('Error: ' + (data.error?.message || 'Unknown error'));
+    }
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════
+function showModal(html) {
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+}
+
+function formatUptime(seconds) {
+  if (!seconds) return '-';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+
+function fmt(n) { return n.toLocaleString(); }
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

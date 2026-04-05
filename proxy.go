@@ -182,6 +182,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(batchResp.StatusCode)
 		w.Write(responseBody)
 
+		recordStat(meta, routeResult, latency, true)
 		logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
 		return
 	}
@@ -193,6 +194,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	latency := time.Since(start)
 	if err != nil {
+		recordStat(meta, routeResult, latency, false)
 		logRequest(meta, routeResult, 0, 0, latency, false, err.Error())
 		writeErrorJSON(w, 502, "backend error: "+err.Error())
 		return
@@ -211,6 +213,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(statusCode)
 	w.Write(responseBody)
 
+	recordStat(meta, routeResult, latency, true)
 	logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
 }
 

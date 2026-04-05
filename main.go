@@ -83,6 +83,12 @@ func main() {
 	mux.HandleFunc("/api/costs", handleCosts)
 	mux.HandleFunc("/api/backends", handleBackends)
 	mux.HandleFunc("/api/config", handleConfigView)
+	mux.HandleFunc("/api/rules", handleRules)
+	mux.HandleFunc("/api/budgets", handleBudgets)
+	mux.HandleFunc("/api/config/yaml", handleConfigYAML)
+	mux.HandleFunc("/api/config/reload", handleConfigReload)
+	mux.HandleFunc("/api/stats", handleStats)
+	registerUI(mux)
 
 	// Wrap with middleware
 	handler := corsMiddleware(loggingMiddleware(mux))

@@ -116,6 +116,11 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadConfigFromBytes(data)
+}
+
+// loadConfigFromBytes parses YAML config from raw bytes.
+func loadConfigFromBytes(data []byte) (*Config, error) {
 	c := &Config{}
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, err
@@ -124,6 +129,11 @@ func loadConfig(path string) (*Config, error) {
 	resolveEnvVars(c)
 	sortRules(c)
 	return c, nil
+}
+
+// marshalConfig serialises the current config to YAML.
+func marshalConfig(c *Config) ([]byte, error) {
+	return yaml.Marshal(c)
 }
 
 func applyDefaults(c *Config) {
