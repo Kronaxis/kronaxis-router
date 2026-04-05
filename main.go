@@ -24,6 +24,7 @@ var (
 	bat         *Batcher
 	batchMgr    *BatchManager
 	costs       *CostTracker
+	respCache   *ResponseCache
 	logger      = log.New(os.Stdout, "[router] ", log.LstdFlags|log.Lmsgprefix)
 	startupTime = time.Now()
 )
@@ -70,6 +71,7 @@ func main() {
 	bat = newBatcher(cfg.Batching)
 	batchMgr = newBatchManager(env("BATCH_DATA_DIR", ""))
 	costs = newCostTracker(cfg.Budgets, db)
+	respCache = newResponseCache(envInt("CACHE_MAX_SIZE", 1000), envInt("CACHE_TTL_SECONDS", 3600))
 
 	// Start background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,6 +151,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"backends_total":   len(backends),
 		"backends_healthy": healthy,
 		"backends":         backends,
+		"cache":            respCache.Stats(),
 	})
 }
 

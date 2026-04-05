@@ -62,9 +62,56 @@ func newBatchManager(dataDir string) *BatchManager {
 		dataDir = "/tmp/kronaxis-router-batches"
 	}
 	os.MkdirAll(dataDir, 0755)
-	return &BatchManager{
+	bm := &BatchManager{
 		jobs:    make(map[string]*BatchJob),
 		dataDir: dataDir,
+	}
+	bm.loadJobs()
+	return bm
+}
+
+// loadJobs restores batch jobs from disk on startup.
+func (bm *BatchManager) loadJobs() {
+	path := filepath.Join(bm.dataDir, "jobs.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // No saved jobs
+	}
+	var jobs []*BatchJob
+	if err := json.Unmarshal(data, &jobs); err != nil {
+		logger.Printf("failed to load batch jobs: %v", err)
+		return
+	}
+	for _, j := range jobs {
+		bm.jobs[j.ID] = j
+		// Resume polling for submitted/processing jobs
+		if j.Status == "submitted" || j.Status == "processing" {
+			backend := pool.Get(j.BackendName)
+			if backend != nil {
+				go bm.pollJob(j, backend)
+			}
+		}
+	}
+	logger.Printf("restored %d batch jobs from disk", len(jobs))
+}
+
+// saveJobs persists all batch jobs to disk.
+func (bm *BatchManager) saveJobs() {
+	bm.mu.RLock()
+	jobs := make([]*BatchJob, 0, len(bm.jobs))
+	for _, j := range bm.jobs {
+		jobs = append(jobs, j)
+	}
+	bm.mu.RUnlock()
+
+	data, err := json.MarshalIndent(jobs, "", "  ")
+	if err != nil {
+		logger.Printf("failed to marshal batch jobs: %v", err)
+		return
+	}
+	path := filepath.Join(bm.dataDir, "jobs.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		logger.Printf("failed to save batch jobs: %v", err)
 	}
 }
 
@@ -114,6 +161,7 @@ func (bm *BatchManager) SubmitBatch(requests []BatchRequest, backendName string)
 	bm.mu.Lock()
 	bm.jobs[jobID] = job
 	bm.mu.Unlock()
+	bm.saveJobs()
 
 	if job.Status == "submitted" {
 		go bm.pollJob(job, backend)
@@ -484,10 +532,10 @@ func (bm *BatchManager) pollJob(job *BatchJob, backend *Backend) {
 				job.CompletedAt = &now
 				callbackURL := job.CallbackURL
 
-				// Download results
 				if outputFileID != "" {
 					go func() {
 						bm.downloadResults(job, backend, outputFileID)
+						bm.saveJobs()
 						if callbackURL != "" {
 							bm.deliverWebhook(job)
 						}
@@ -496,6 +544,7 @@ func (bm *BatchManager) pollJob(job *BatchJob, backend *Backend) {
 					go bm.deliverWebhook(job)
 				}
 				bm.mu.Unlock()
+				bm.saveJobs()
 				logger.Printf("batch %s completed (%d requests, provider: %s)", job.ID, job.RequestCount, job.Provider)
 				return
 
@@ -503,6 +552,7 @@ func (bm *BatchManager) pollJob(job *BatchJob, backend *Backend) {
 				job.Status = status
 				job.Error = "provider reported: " + status
 				bm.mu.Unlock()
+				bm.saveJobs()
 				logger.Printf("batch %s %s", job.ID, status)
 				return
 

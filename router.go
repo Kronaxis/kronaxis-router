@@ -49,16 +49,23 @@ func (r *Router) updateRules(rules []RoutingRule, defaults DefaultsConfig) {
 }
 
 // Route selects the best backend for a given request.
-// It evaluates rules in priority order (highest first), filters backends
-// by health, capabilities, LoRA adapters, and cost constraints.
+// Returns the primary result plus an ordered list of fallback candidates.
 func (r *Router) Route(req RouteRequest) (RouteResult, error) {
+	candidates := r.RouteCandidates(req)
+	if len(candidates) == 0 {
+		return RouteResult{}, fmt.Errorf("no healthy backend available")
+	}
+	return candidates[0], nil
+}
+
+// RouteCandidates returns all viable backends for a request, in priority order.
+// The caller should try each one until one succeeds (failover).
+func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 	r.mu.RLock()
 	rules := r.rules
 	defaults := r.defaults
 	r.mu.RUnlock()
 
-	// Detect LoRA adapter request: if the model field matches a known adapter
-	// on any backend, treat it as a LoRA routing request.
 	loraAdapter := detectLoRAAdapter(req.ModelField, r.pool)
 
 	// Try each rule in priority order
@@ -68,24 +75,17 @@ func (r *Router) Route(req RouteRequest) (RouteResult, error) {
 			continue
 		}
 
-		backend := r.resolveBackend(rule, req, loraAdapter)
-		if backend == nil {
-			continue // Rule matched but no healthy backend available; try next rule
+		candidates := r.resolveAllBackends(rule, req, loraAdapter)
+		if len(candidates) == 0 {
+			continue
 		}
-
-		modelName := resolveModelName(req.ModelField, backend, loraAdapter)
-		return RouteResult{
-			Backend:   backend,
-			Rule:      rule,
-			ModelName: modelName,
-		}, nil
+		return candidates
 	}
 
 	// No rule matched: use default fallback chain
 	backendNames := defaults.FallbackChain
 	healthy := r.pool.GetHealthy(backendNames, nil)
 
-	// If LoRA adapter requested, prefer backends with it
 	if loraAdapter != "" {
 		withAdapter := r.pool.GetWithAdapter(backendNames, loraAdapter)
 		if len(withAdapter) > 0 {
@@ -93,16 +93,40 @@ func (r *Router) Route(req RouteRequest) (RouteResult, error) {
 		}
 	}
 
-	if len(healthy) > 0 {
-		backend := healthy[0]
-		modelName := resolveModelName(req.ModelField, backend, loraAdapter)
-		return RouteResult{
+	var results []RouteResult
+	for _, backend := range healthy {
+		results = append(results, RouteResult{
 			Backend:   backend,
-			ModelName: modelName,
-		}, nil
+			ModelName: resolveModelName(req.ModelField, backend, loraAdapter),
+		})
+	}
+	return results
+}
+
+// resolveAllBackends returns all healthy, capable backends from a rule's list.
+func (r *Router) resolveAllBackends(rule *RoutingRule, req RouteRequest, loraAdapter string) []RouteResult {
+	healthy := r.pool.GetHealthy(rule.Backends, rule.Required)
+
+	if loraAdapter != "" {
+		withAdapter := filterByAdapter(healthy, loraAdapter)
+		if len(withAdapter) > 0 {
+			healthy = withAdapter
+		}
 	}
 
-	return RouteResult{}, fmt.Errorf("no healthy backend available")
+	if rule.MaxCost > 0 {
+		healthy = filterByCost(healthy, rule.MaxCost)
+	}
+
+	var results []RouteResult
+	for _, backend := range healthy {
+		results = append(results, RouteResult{
+			Backend:   backend,
+			Rule:      rule,
+			ModelName: resolveModelName(req.ModelField, backend, loraAdapter),
+		})
+	}
+	return results
 }
 
 // matchRule checks whether a routing rule matches the incoming request.
@@ -138,30 +162,6 @@ func matchRule(rule *RoutingRule, req RouteRequest) bool {
 	return true
 }
 
-// resolveBackend finds the first healthy, capable backend from a rule's list.
-func (r *Router) resolveBackend(rule *RoutingRule, req RouteRequest, loraAdapter string) *Backend {
-	healthy := r.pool.GetHealthy(rule.Backends, rule.Required)
-
-	// If LoRA adapter requested, prefer backends with it
-	if loraAdapter != "" {
-		withAdapter := filterByAdapter(healthy, loraAdapter)
-		if len(withAdapter) > 0 {
-			healthy = withAdapter
-		}
-		// If no backend has the adapter, fall back to any healthy backend
-		// (system prompt will provide role context instead of LoRA)
-	}
-
-	// Apply cost ceiling
-	if rule.MaxCost > 0 {
-		healthy = filterByCost(healthy, rule.MaxCost)
-	}
-
-	if len(healthy) == 0 {
-		return nil
-	}
-	return healthy[0]
-}
 
 // detectLoRAAdapter checks if the model field in the request corresponds to
 // a LoRA adapter on any backend.

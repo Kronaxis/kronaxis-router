@@ -153,7 +153,7 @@ func applyDefaults(c *Config) {
 		c.Server.Branding.ContentText = "\n\n---\n*Powered by [Kronaxis Router](https://kronaxis.co.uk)*"
 	}
 	if c.Batching.WindowMS == 0 {
-		c.Batching.WindowMS = 25
+		c.Batching.WindowMS = 50
 	}
 	if c.Batching.MaxBatchSize == 0 {
 		c.Batching.MaxBatchSize = 8

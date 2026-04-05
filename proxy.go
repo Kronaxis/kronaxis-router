@@ -101,6 +101,20 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta.Stream = req.Stream
 	meta.ContentType = detectContentType(req.Messages)
 
+	// Check cache before doing anything expensive
+	cacheHit, cacheable := "", false
+	if cacheHit, cacheable = cacheKey(&req); cacheable {
+		if body, statusCode, headers, ok := respCache.Get(cacheHit); ok {
+			for k, v := range headers {
+				w.Header().Set(k, v)
+			}
+			w.Header().Set("X-Kronaxis-Cache", "HIT")
+			w.WriteHeader(statusCode)
+			w.Write(body)
+			return
+		}
+	}
+
 	// Check budget FIRST -- reject before routing
 	budgetResult := costs.checkBudget(meta.Service)
 	if budgetResult.action == "reject" {
@@ -108,117 +122,178 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route the request
-	routeResult, err := rtr.Route(meta)
-	if err != nil {
-		writeErrorJSON(w, 503, "no healthy backend available")
-		return
-	}
-
-	// Budget downgrade: if over budget, switch to cheaper backend
-	if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
-		downgraded := pool.Get(budgetResult.downgradeTarget)
-		if downgraded != nil && downgraded.IsAvailable() {
-			// Only downgrade if the downgrade target is actually cheaper
-			if downgraded.Config.CostOutput1M < routeResult.Backend.Config.CostOutput1M {
-				routeResult.Backend = downgraded
-				routeResult.ModelName = downgraded.Config.ModelName
+	// Auto-batch: if priority is "bulk" and backend supports batch API,
+	// automatically submit to async batch for 50% cost savings
+	if meta.Priority == "bulk" {
+		candidates := rtr.RouteCandidates(meta)
+		if len(candidates) > 0 {
+			provider := detectBatchProvider(candidates[0].Backend.Config.Type, candidates[0].Backend.Config.URL)
+			if provider != "" {
+				batchReqs := []BatchRequest{{
+					CustomID: fmt.Sprintf("auto_%d", time.Now().UnixNano()),
+					Body:     req,
+				}}
+				job, err := batchMgr.SubmitBatch(batchReqs, candidates[0].Backend.Config.Name)
+				if err == nil {
+					writeJSON(w, 202, map[string]interface{}{
+						"batch":   true,
+						"job_id":  job.ID,
+						"message": "Request submitted to async batch API for 50% cost savings. Poll GET /api/batch?id=" + job.ID,
+						"status":  job.Status,
+					})
+					return
+				}
+				// If batch submit fails, fall through to synchronous dispatch
+				logger.Printf("auto-batch failed, falling back to sync: %v", err)
 			}
 		}
 	}
 
-	// Apply Qwen thinking mode injection
-	injectQwenThinkingDisabled(&req, routeResult.Backend)
-
-	// Update model name in request
-	req.Model = routeResult.ModelName
-
-	// Re-marshal the modified request
-	modifiedBody, err := json.Marshal(req)
-	if err != nil {
-		writeErrorJSON(w, 500, "failed to marshal request")
+	// Route: get all candidate backends in priority order
+	candidates := rtr.RouteCandidates(meta)
+	if len(candidates) == 0 {
+		writeErrorJSON(w, 503, "no healthy backend available")
 		return
 	}
 
-	// Add branding headers
-	addBrandingHeaders(w, routeResult)
+	// Budget downgrade: prepend cheaper backend if over budget
+	if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
+		downgraded := pool.Get(budgetResult.downgradeTarget)
+		if downgraded != nil && downgraded.IsAvailable() {
+			candidates = append([]RouteResult{{
+				Backend:   downgraded,
+				ModelName: downgraded.Config.ModelName,
+			}}, candidates...)
+		}
+	}
 
 	start := time.Now()
 
-	if req.Stream {
-		// Streaming: proxy SSE directly
-		handleStreaming(w, r, routeResult, modifiedBody, &req, meta, start)
-		return
-	}
+	// Try each candidate with failover
+	var lastErr error
+	for i, candidate := range candidates {
+		routeResult := candidate
 
-	// Non-streaming: check if we should batch
-	if bat.ShouldBatch(meta) {
-		entry := &BatchEntry{
-			Body:   modifiedBody,
-			Parsed: &req,
-			Route:  routeResult,
-			Meta:   meta,
+		// Prepare request for this backend
+		reqCopy := req
+		injectQwenThinkingDisabled(&reqCopy, routeResult.Backend)
+		reqCopy.Model = routeResult.ModelName
+		modifiedBody, err := json.Marshal(reqCopy)
+		if err != nil {
+			continue
 		}
-		respCh := bat.Enqueue(entry)
-		batchResp := <-respCh
 
-		latency := time.Since(start)
-		if batchResp.Err != nil {
-			logRequest(meta, routeResult, 0, 0, latency, false, batchResp.Err.Error())
-			writeErrorJSON(w, 502, "backend error: "+batchResp.Err.Error())
+		if i == 0 {
+			addBrandingHeaders(w, routeResult)
+		}
+
+		// Streaming: no failover (headers already sent)
+		if reqCopy.Stream {
+			handleStreaming(w, r, routeResult, modifiedBody, &reqCopy, meta, start)
 			return
 		}
 
-		// Parse response for cost tracking
+		// Throughput batching (background/bulk on first candidate only)
+		if i == 0 && bat.ShouldBatch(meta) {
+			entry := &BatchEntry{
+				Body:   modifiedBody,
+				Parsed: &reqCopy,
+				Route:  routeResult,
+				Meta:   meta,
+			}
+			respCh := bat.Enqueue(entry)
+			batchResp := <-respCh
+
+			latency := time.Since(start)
+			if batchResp.Err != nil {
+				logRequest(meta, routeResult, 0, 0, latency, false, batchResp.Err.Error())
+				writeErrorJSON(w, 502, "backend error: "+batchResp.Err.Error())
+				return
+			}
+
+			var chatResp ChatResponse
+			json.Unmarshal(batchResp.Body, &chatResp)
+			inputTokens, outputTokens := estimateTokens(&reqCopy, &chatResp)
+			responseBody := postProcessResponse(batchResp.Body, routeResult.Backend)
+
+			for k, v := range batchResp.Headers {
+				w.Header().Set(k, v)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(batchResp.StatusCode)
+			w.Write(responseBody)
+
+			recordStat(meta, routeResult, latency, true)
+			logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
+			return
+		}
+
+		// Direct dispatch with retry
+		statusCode, respHeaders, respBody, err := forwardWithRetry(
+			routeResult.Backend, routeResult.ModelName, modifiedBody, &reqCopy, meta,
+		)
+
+		if err != nil {
+			lastErr = err
+			logger.Printf("backend %s failed, trying next (%d/%d): %v",
+				routeResult.Backend.Config.Name, i+1, len(candidates), err)
+			continue // Try next backend
+		}
+
+		// 5xx from backend: try next candidate
+		if statusCode >= 500 {
+			lastErr = fmt.Errorf("backend %s returned %d", routeResult.Backend.Config.Name, statusCode)
+			logger.Printf("backend %s returned %d, trying next (%d/%d)",
+				routeResult.Backend.Config.Name, statusCode, i+1, len(candidates))
+			continue
+		}
+
+		// Success (or 4xx which is a client error, pass through)
+		latency := time.Since(start)
 		var chatResp ChatResponse
-		json.Unmarshal(batchResp.Body, &chatResp)
-		inputTokens, outputTokens := estimateTokens(&req, &chatResp)
+		json.Unmarshal(respBody, &chatResp)
+		inputTokens, outputTokens := estimateTokens(&reqCopy, &chatResp)
+		responseBody := postProcessResponse(respBody, routeResult.Backend)
 
-		// Apply branding and think tag stripping to response
-		responseBody := postProcessResponse(batchResp.Body, routeResult.Backend)
-
-		// Write response
-		for k, v := range batchResp.Headers {
+		for k, v := range respHeaders {
 			w.Header().Set(k, v)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(batchResp.StatusCode)
+		w.WriteHeader(statusCode)
 		w.Write(responseBody)
 
-		recordStat(meta, routeResult, latency, true)
-		logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
+		success := statusCode < 400
+		if success && cacheable {
+			respCache.Set(cacheHit, responseBody, statusCode, respHeaders)
+		}
+		recordStat(meta, routeResult, latency, success)
+		logRequest(meta, routeResult, inputTokens, outputTokens, latency, success, "")
 		return
 	}
 
-	// Direct dispatch (non-batched, non-streaming)
-	statusCode, respHeaders, respBody, err := forwardToBackend(
-		routeResult.Backend, routeResult.ModelName, modifiedBody, &req, meta,
-	)
-
+	// All candidates failed
 	latency := time.Since(start)
-	if err != nil {
-		recordStat(meta, routeResult, latency, false)
-		logRequest(meta, routeResult, 0, 0, latency, false, err.Error())
-		writeErrorJSON(w, 502, "backend error: "+err.Error())
-		return
+	errMsg := "all backends failed"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	recordStat(meta, candidates[0], latency, false)
+	logRequest(meta, candidates[0], 0, 0, latency, false, errMsg)
+	writeErrorJSON(w, 502, "all backends failed: "+errMsg)
+}
+
+// forwardWithRetry wraps forwardToBackend with one retry on transient errors.
+func forwardWithRetry(
+	backend *Backend, modelName string, body []byte, req *ChatRequest, meta RouteRequest,
+) (int, map[string]string, []byte, error) {
+	statusCode, headers, respBody, err := forwardToBackend(backend, modelName, body, req, meta)
+	if err == nil {
+		return statusCode, headers, respBody, nil
 	}
 
-	var chatResp ChatResponse
-	json.Unmarshal(respBody, &chatResp)
-	inputTokens, outputTokens := estimateTokens(&req, &chatResp)
-
-	responseBody := postProcessResponse(respBody, routeResult.Backend)
-
-	for k, v := range respHeaders {
-		w.Header().Set(k, v)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	w.Write(responseBody)
-
-	success := statusCode < 400
-	recordStat(meta, routeResult, latency, success)
-	logRequest(meta, routeResult, inputTokens, outputTokens, latency, success, "")
+	// Retry once after a short backoff for transport errors
+	time.Sleep(500 * time.Millisecond)
+	return forwardToBackend(backend, modelName, body, req, meta)
 }
 
 // forwardToBackend sends a request to the selected backend and tracks errors
