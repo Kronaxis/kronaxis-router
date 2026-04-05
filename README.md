@@ -9,7 +9,7 @@ A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper and does 
 - **Cost-optimised routing** -- YAML rules match on task type, service, tier, priority, and content type. Route to the cheapest capable backend.
 - **Multi-backend support** -- Local vLLM, Gemini, OpenAI, Ollama. Mix local GPUs with cloud APIs. Automatic format adaptation.
 - **LoRA adapter routing** -- Knows which vLLM instances have which adapters loaded. Routes role-specific requests to the right instance.
-- **Request batching** -- Collects non-streaming requests over a short window (25ms default) for better GPU utilisation. Interactive requests bypass batching.
+- **Request batching** -- Background/bulk requests collected over a 50ms window and dispatched as a single multi-prompt `/v1/completions` call to vLLM (true batching, one HTTP round-trip). Non-vLLM backends get concurrent dispatch. Interactive and normal priority requests are always dispatched immediately.
 - **Per-service budgets** -- Daily cost limits per calling service. Exceeding a budget triggers downgrade (cheaper model) or rejection.
 - **Health checks & failover** -- 30-second health probes. Automatic failover through the backend preference chain.
 - **Streaming pass-through** -- SSE forwarding for real-time use cases (voice, chat).

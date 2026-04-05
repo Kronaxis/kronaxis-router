@@ -833,3 +833,21 @@ func writeErrorJSON(w http.ResponseWriter, status int, message string) {
 func jsonMarshal(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
 }
+
+// newJSONRequest creates a POST request with JSON content type and optional auth.
+func newJSONRequest(url, apiKey string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	return req, nil
+}
+
+// readBody reads and returns the full response body.
+func readBody(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(resp.Body)
+}

@@ -217,14 +217,20 @@ budgets:
 
 # ──────────────────────────────────────────────────────────────────────
 # BATCHING
-# Collect non-streaming requests over a short window before dispatch.
-# Improves GPU utilisation when multiple requests arrive near-simultaneously.
-# Interactive requests always bypass batching.
+# Only applies to "background" and "bulk" priority requests.
+# "interactive" and "normal" requests are always dispatched immediately.
+#
+# For vLLM backends: combines multiple prompts into a single
+# /v1/completions API call (true batching, one HTTP round-trip).
+# For other backends: dispatches concurrently after the window.
+#
+# The collection window adds latency, so it is only used for work
+# where throughput matters more than response time.
 # ──────────────────────────────────────────────────────────────────────
 
 batching:
   enabled: true
-  window_ms: 25               # Collect for 25ms or until batch is full
+  window_ms: 50                # Collect for 50ms or until batch is full
   max_batch_size: 8            # Dispatch when 8 requests queued
   priority_bypass:             # These priorities skip batching entirely
     - interactive
