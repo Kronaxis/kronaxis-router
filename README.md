@@ -9,7 +9,8 @@ A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper and does 
 - **Cost-optimised routing** -- YAML rules match on task type, service, tier, priority, and content type. Route to the cheapest capable backend.
 - **Multi-backend support** -- Local vLLM, Gemini, OpenAI, Ollama. Mix local GPUs with cloud APIs. Automatic format adaptation.
 - **LoRA adapter routing** -- Knows which vLLM instances have which adapters loaded. Routes role-specific requests to the right instance.
-- **Request batching** -- Background/bulk requests collected over a 50ms window and dispatched as a single multi-prompt `/v1/completions` call to vLLM (true batching, one HTTP round-trip). Non-vLLM backends get concurrent dispatch. Interactive and normal priority requests are always dispatched immediately.
+- **Throughput batching** -- Background/bulk requests collected over a 50ms window and dispatched as a single multi-prompt `/v1/completions` call to vLLM. Improves GPU utilisation on self-hosted models.
+- **Cost-saving batch API** -- Submit bulk work to provider batch APIs (OpenAI, Anthropic, Gemini, Mistral, Groq, Together, Fireworks) for **50% off** standard pricing. Async JSONL processing, typically completes in minutes to hours. Submit via `POST /api/batch/submit`, poll via `GET /api/batch`, retrieve results via `GET /api/batch/results`.
 - **Per-service budgets** -- Daily cost limits per calling service. Exceeding a budget triggers downgrade (cheaper model) or rejection.
 - **Health checks & failover** -- 30-second health probes. Automatic failover through the backend preference chain.
 - **Streaming pass-through** -- SSE forwarding for real-time use cases (voice, chat).
@@ -122,6 +123,9 @@ budgets:
 | `/api/backends` | POST | Register a dynamic backend |
 | `/api/backends?name=X` | DELETE | Remove a dynamic backend |
 | `/api/config` | GET | View current routing config summary |
+| `/api/batch/submit` | POST | Submit async batch job (50% off) |
+| `/api/batch` | GET | List all batch jobs or get status by `?id=` |
+| `/api/batch/results` | GET | Retrieve results of a completed batch |
 
 ## Environment Variables
 

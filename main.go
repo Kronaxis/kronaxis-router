@@ -22,6 +22,7 @@ var (
 	pool        *BackendPool
 	rtr         *Router
 	bat         *Batcher
+	batchMgr    *BatchManager
 	costs       *CostTracker
 	logger      = log.New(os.Stdout, "[router] ", log.LstdFlags|log.Lmsgprefix)
 	startupTime = time.Now()
@@ -67,6 +68,7 @@ func main() {
 	pool = newBackendPool(cfg.Backends)
 	rtr = newRouter(cfg.Rules, cfg.Defaults, pool)
 	bat = newBatcher(cfg.Batching)
+	batchMgr = newBatchManager(env("BATCH_DATA_DIR", ""))
 	costs = newCostTracker(cfg.Budgets, db)
 
 	// Start background goroutines
@@ -88,6 +90,10 @@ func main() {
 	mux.HandleFunc("/api/config/yaml", handleConfigYAML)
 	mux.HandleFunc("/api/config/reload", handleConfigReload)
 	mux.HandleFunc("/api/stats", handleStats)
+	mux.HandleFunc("/api/batch", handleBatchStatus)
+	mux.HandleFunc("/api/batch/submit", handleBatchSubmit)
+	mux.HandleFunc("/api/batch/results", handleBatchResults)
+	mux.HandleFunc("/api/batch/stream", handleBatchStream)
 	registerUI(mux)
 
 	// Wrap with middleware (auth -> CORS -> logging)
