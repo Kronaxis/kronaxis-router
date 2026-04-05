@@ -1,0 +1,230 @@
+# Kronaxis Router - Configuration
+# https://github.com/kronaxis/kronaxis-router
+#
+# This config demonstrates cost-optimised LLM routing out of the box.
+# The core principle: route every request to the CHEAPEST model that can
+# reliably deliver the required output quality.
+#
+# A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper
+# and does the job just as well. Save the CFO for strategic decisions.
+#
+# Environment variables can be referenced as: "env:VARIABLE_NAME"
+# Config is hot-reloaded every 5 seconds -- no restart needed.
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 120s
+  branding:
+    headers: true                    # X-Powered-By: Kronaxis Router on every response
+    header_name: "Kronaxis Router"
+    content_inject: false            # Set true for hosted/SaaS free tier
+    content_text: "\n\n---\n*Powered by [Kronaxis Router](https://kronaxis.co.uk)*"
+    content_skip_json: true          # Never inject into structured JSON responses
+
+# ──────────────────────────────────────────────────────────────────────
+# BACKENDS
+# Define every LLM endpoint available to the router.
+# Cost is per 1 million tokens (USD). Set realistic prices.
+# ──────────────────────────────────────────────────────────────────────
+
+backends:
+  # ── Local models (cheapest: electricity only) ──────────────────────
+
+  - name: local-large
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "large-model"
+    cost_input_1m: 0.01              # ~$0.02/hr GPU amortised
+    cost_output_1m: 0.01
+    capabilities: [json_output, long_context]
+    max_concurrent: 4
+    lora_adapters: []
+    health_endpoint: "/v1/models"
+
+  - name: local-small
+    url: "http://localhost:8001"
+    type: vllm
+    model_name: "small-model"
+    cost_input_1m: 0.005             # Smaller model, less GPU
+    cost_output_1m: 0.005
+    capabilities: [json_output]
+    max_concurrent: 8
+    lora_adapters: []
+    health_endpoint: "/v1/models"
+
+  # ── Cloud models (more expensive, always available) ────────────────
+
+  - name: cloud-fast
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-flash"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 0.15              # 15x more than local
+    cost_output_1m: 0.60             # 60x more than local
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 50
+    lora_adapters: []
+
+  - name: cloud-powerful
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-pro"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 1.25              # 125x more than local
+    cost_output_1m: 10.00            # 1000x more than local
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 20
+    lora_adapters: []
+
+  # ── OpenAI (example, optional) ─────────────────────────────────────
+
+  # - name: openai-4o
+  #   url: "https://api.openai.com"
+  #   type: openai
+  #   model_name: "gpt-4o"
+  #   api_key: "env:OPENAI_API_KEY"
+  #   cost_input_1m: 2.50
+  #   cost_output_1m: 10.00
+  #   capabilities: [json_output, long_context, vision]
+  #   max_concurrent: 30
+
+  # - name: openai-4o-mini
+  #   url: "https://api.openai.com"
+  #   type: openai
+  #   model_name: "gpt-4o-mini"
+  #   api_key: "env:OPENAI_API_KEY"
+  #   cost_input_1m: 0.15
+  #   cost_output_1m: 0.60
+  #   capabilities: [json_output]
+  #   max_concurrent: 50
+
+# ──────────────────────────────────────────────────────────────────────
+# ROUTING RULES
+# Rules are evaluated in priority order (highest first).
+# Each rule matches on request metadata and routes to backends in order.
+# The router tries each backend until one is healthy and available.
+#
+# COST-SAVING PRINCIPLES DEMONSTRATED:
+#
+# 1. STRUCTURED EXTRACTION → small model
+#    JSON parsing, classification, scoring, short answers.
+#    A 7-9B model handles these as well as a 70B model.
+#    Savings: 50-90% vs always using the large model.
+#
+# 2. HEAVY REASONING → large model
+#    Planning, multi-step logic, creative writing, long synthesis.
+#    Only these tasks justify the larger model's cost.
+#
+# 3. BULK/BACKGROUND work → cheapest available
+#    Batch enrichment, training data generation, overnight jobs.
+#    Latency doesn't matter; cost does. Queue for the cheapest GPU.
+#
+# 4. INTERACTIVE work → fastest available
+#    Chat, phone calls, real-time UI. Skip batching, accept higher cost.
+#
+# 5. VISION tasks → vision-capable backends only
+#    Don't waste routing attempts on backends that can't see images.
+#
+# 6. BUDGET OVERFLOW → downgrade, don't fail
+#    When daily budget is hit, route to a cheaper model instead of
+#    returning errors. The work still gets done.
+# ──────────────────────────────────────────────────────────────────────
+
+rules:
+  # ── Principle 4: Interactive gets priority ─────────────────────────
+  # Phone calls, live chat, copilot. Never batch. Use the fast model.
+  - name: interactive-priority
+    priority: 200
+    match:
+      priority_level: interactive
+    backends: [local-large, cloud-fast]
+
+  # ── Principle 5: Vision routes to vision-capable backends ──────────
+  - name: vision-tasks
+    priority: 150
+    match:
+      content_type: vision
+    backends: [cloud-fast, cloud-powerful]
+    required_capabilities: [vision]
+
+  # ── Principle 1: Structured extraction → small model ───────────────
+  # These tasks need JSON output and short responses. The small model
+  # is 50% cheaper and just as accurate for classification/scoring.
+  - name: structured-extraction
+    priority: 120
+    match:
+      tier: 2
+    backends: [local-small, local-large, cloud-fast]
+    max_cost_1m: 0.50
+
+  # ��─ Principle 2: Heavy reasoning → large model ─────────────────────
+  # Planning, reflection, creative writing. Worth the extra cost.
+  - name: heavy-reasoning
+    priority: 110
+    match:
+      tier: 1
+    backends: [local-large, cloud-fast, cloud-powerful]
+
+  # ── Principle 3: Bulk work → cheapest available ────────────────────
+  # Enrichment, training data, overnight batch jobs.
+  # Always route to the cheapest healthy backend.
+  - name: bulk-cheapest
+    priority: 100
+    match:
+      priority_level: bulk
+    backends: [local-small, local-large, cloud-fast]
+    max_cost_1m: 0.10
+
+  - name: background-cheap
+    priority: 100
+    match:
+      priority_level: background
+    backends: [local-small, local-large, cloud-fast]
+    max_cost_1m: 0.50
+
+# ──────────────────────────────────────────────────────────────────────
+# DEFAULT FALLBACK
+# If no rule matches, try these backends in order.
+# Cheapest first, cloud as safety net.
+# ──────────────────────────────────────────────────────────────────────
+
+defaults:
+  fallback_chain: [local-small, local-large, cloud-fast]
+  default_timeout_ms: 120000
+
+# ──────────────────────────────────────────────────────────────────────
+# BUDGETS (Principle 6: downgrade, don't fail)
+# Per-service daily cost limits. When exceeded:
+#   "downgrade" → re-route to a cheaper backend
+#   "reject"    → return HTTP 429 (use sparingly)
+# ──────────────────────────────────────────────────────────────────────
+
+budgets:
+  default:
+    daily_limit_usd: 50.00
+    action: downgrade
+    downgrade_target: local-small
+
+  # Example per-service overrides:
+  # my-api:
+  #   daily_limit_usd: 100.00
+  #   action: downgrade
+  #   downgrade_target: local-small
+  # batch-worker:
+  #   daily_limit_usd: 20.00
+  #   action: reject
+
+# ──────────────────────────────────────────────────────────────────────
+# BATCHING
+# Collect non-streaming requests over a short window before dispatch.
+# Improves GPU utilisation when multiple requests arrive near-simultaneously.
+# Interactive requests always bypass batching.
+# ──────────────────────────────────────────────────────────────────────
+
+batching:
+  enabled: true
+  window_ms: 25               # Collect for 25ms or until batch is full
+  max_batch_size: 8            # Dispatch when 8 requests queued
+  priority_bypass:             # These priorities skip batching entirely
+    - interactive

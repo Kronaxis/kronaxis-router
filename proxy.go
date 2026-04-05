@@ -1,0 +1,726 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// OpenAI-compatible request/response structures.
+
+type ChatRequest struct {
+	Model              string                 `json:"model"`
+	Messages           []ChatMessage          `json:"messages"`
+	MaxTokens          int                    `json:"max_tokens,omitempty"`
+	Temperature        *float64               `json:"temperature,omitempty"`
+	TopP               *float64               `json:"top_p,omitempty"`
+	Stream             bool                   `json:"stream,omitempty"`
+	Stop               interface{}            `json:"stop,omitempty"`
+	FrequencyPenalty   *float64               `json:"frequency_penalty,omitempty"`
+	PresencePenalty    *float64               `json:"presence_penalty,omitempty"`
+	N                  int                    `json:"n,omitempty"`
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
+}
+
+type ChatMessage struct {
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string or []ContentPart
+}
+
+type ContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *ImageURLDetail `json:"image_url,omitempty"`
+}
+
+type ImageURLDetail struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type ChatResponse struct {
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	Model   string       `json:"model"`
+	Choices []ChatChoice `json:"choices"`
+	Usage   *ChatUsage   `json:"usage,omitempty"`
+}
+
+type ChatChoice struct {
+	Index        int         `json:"index"`
+	Message      ChatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
+}
+
+type ChatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// handleChatCompletions is the main proxy handler.
+func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	// Read body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErrorJSON(w, 400, "invalid request body")
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req ChatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErrorJSON(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Extract routing metadata from headers
+	meta := extractHeaders(r)
+	meta.ModelField = req.Model
+	meta.Stream = req.Stream
+	meta.ContentType = detectContentType(req.Messages)
+
+	// Check budget
+	budgetResult := costs.checkBudget(meta.Service)
+
+	// Route the request
+	routeResult, err := rtr.Route(meta)
+	if err != nil {
+		// If routing fails and budget said downgrade, try the downgrade target
+		if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
+			backend := pool.Get(budgetResult.downgradeTarget)
+			if backend != nil && backend.IsAvailable() {
+				routeResult = RouteResult{Backend: backend, ModelName: backend.Config.ModelName}
+				err = nil
+			}
+		}
+		if err != nil {
+			writeErrorJSON(w, 503, "no healthy backend available")
+			return
+		}
+	}
+
+	// Budget enforcement
+	if budgetResult.action == "reject" {
+		writeErrorJSON(w, 429, fmt.Sprintf("daily budget exceeded for service %q", meta.Service))
+		return
+	}
+	if budgetResult.action == "downgrade" && budgetResult.downgradeTarget != "" {
+		downgraded := pool.Get(budgetResult.downgradeTarget)
+		if downgraded != nil && downgraded.IsAvailable() {
+			routeResult.Backend = downgraded
+			routeResult.ModelName = downgraded.Config.ModelName
+		}
+	}
+
+	// Apply Qwen thinking mode injection
+	injectQwenThinkingDisabled(&req, routeResult.Backend)
+
+	// Update model name in request
+	req.Model = routeResult.ModelName
+
+	// Re-marshal the modified request
+	modifiedBody, err := json.Marshal(req)
+	if err != nil {
+		writeErrorJSON(w, 500, "failed to marshal request")
+		return
+	}
+
+	// Add branding headers
+	addBrandingHeaders(w, routeResult)
+
+	start := time.Now()
+
+	if req.Stream {
+		// Streaming: proxy SSE directly
+		handleStreaming(w, r, routeResult, modifiedBody, &req, meta, start)
+		return
+	}
+
+	// Non-streaming: check if we should batch
+	if bat.ShouldBatch(meta) {
+		entry := &BatchEntry{
+			Body:   modifiedBody,
+			Parsed: &req,
+			Route:  routeResult,
+			Meta:   meta,
+		}
+		respCh := bat.Enqueue(entry)
+		batchResp := <-respCh
+
+		latency := time.Since(start)
+		if batchResp.Err != nil {
+			logRequest(meta, routeResult, 0, 0, latency, false, batchResp.Err.Error())
+			writeErrorJSON(w, 502, "backend error: "+batchResp.Err.Error())
+			return
+		}
+
+		// Parse response for cost tracking
+		var chatResp ChatResponse
+		json.Unmarshal(batchResp.Body, &chatResp)
+		inputTokens, outputTokens := estimateTokens(&req, &chatResp)
+
+		// Apply branding and think tag stripping to response
+		responseBody := postProcessResponse(batchResp.Body, routeResult.Backend)
+
+		// Write response
+		for k, v := range batchResp.Headers {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(batchResp.StatusCode)
+		w.Write(responseBody)
+
+		logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
+		return
+	}
+
+	// Direct dispatch (non-batched, non-streaming)
+	statusCode, respHeaders, respBody, err := forwardToBackend(
+		routeResult.Backend, routeResult.ModelName, modifiedBody, &req, meta,
+	)
+
+	latency := time.Since(start)
+	if err != nil {
+		logRequest(meta, routeResult, 0, 0, latency, false, err.Error())
+		writeErrorJSON(w, 502, "backend error: "+err.Error())
+		return
+	}
+
+	var chatResp ChatResponse
+	json.Unmarshal(respBody, &chatResp)
+	inputTokens, outputTokens := estimateTokens(&req, &chatResp)
+
+	responseBody := postProcessResponse(respBody, routeResult.Backend)
+
+	for k, v := range respHeaders {
+		w.Header().Set(k, v)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	w.Write(responseBody)
+
+	logRequest(meta, routeResult, inputTokens, outputTokens, latency, true, "")
+}
+
+// forwardToBackend sends a request to the selected backend.
+func forwardToBackend(
+	backend *Backend,
+	modelName string,
+	body []byte,
+	req *ChatRequest,
+	meta RouteRequest,
+) (int, map[string]string, []byte, error) {
+	backend.ActiveReqs.Add(1)
+	defer backend.ActiveReqs.Add(-1)
+
+	switch backend.Config.Type {
+	case "gemini":
+		return forwardToGemini(backend, body, req)
+	case "ollama":
+		return forwardToOllama(backend, body, req)
+	default:
+		return forwardToOpenAI(backend, body)
+	}
+}
+
+// forwardToOpenAI sends to an OpenAI-compatible endpoint (vLLM, OpenAI, etc.)
+func forwardToOpenAI(backend *Backend, body []byte) (int, map[string]string, []byte, error) {
+	url := backend.Config.URL + "/v1/chat/completions"
+
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if backend.Config.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+backend.Config.APIKey)
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+
+	headers := map[string]string{
+		"Content-Type": resp.Header.Get("Content-Type"),
+	}
+	return resp.StatusCode, headers, respBody, nil
+}
+
+// forwardToGemini transforms the request to Gemini's REST format.
+func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[string]string, []byte, error) {
+	model := backend.Config.ModelName
+	url := backend.Config.URL + "/models/" + model + ":generateContent?key=" + backend.Config.APIKey
+
+	// Transform OpenAI format to Gemini format
+	geminiReq := buildGeminiRequest(req)
+	body, err := json.Marshal(geminiReq)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return resp.StatusCode, nil, respBody, fmt.Errorf("gemini error %d", resp.StatusCode)
+	}
+
+	// Transform Gemini response back to OpenAI format
+	openAIResp := parseGeminiResponse(respBody, model)
+	result, _ := json.Marshal(openAIResp)
+
+	return 200, map[string]string{"Content-Type": "application/json"}, result, nil
+}
+
+type geminiRequest struct {
+	Contents          []geminiContent          `json:"contents"`
+	SystemInstruction *geminiContent           `json:"systemInstruction,omitempty"`
+	GenerationConfig  *geminiGenerationConfig  `json:"generationConfig,omitempty"`
+}
+
+type geminiContent struct {
+	Role  string       `json:"role,omitempty"`
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiPart struct {
+	Text       string          `json:"text,omitempty"`
+	InlineData *geminiInline   `json:"inlineData,omitempty"`
+}
+
+type geminiInline struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+type geminiGenerationConfig struct {
+	Temperature     *float64 `json:"temperature,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	TopP            *float64 `json:"topP,omitempty"`
+}
+
+func buildGeminiRequest(req *ChatRequest) geminiRequest {
+	gr := geminiRequest{}
+
+	if req.MaxTokens > 0 || req.Temperature != nil || req.TopP != nil {
+		gr.GenerationConfig = &geminiGenerationConfig{
+			MaxOutputTokens: req.MaxTokens,
+			Temperature:     req.Temperature,
+			TopP:            req.TopP,
+		}
+	}
+
+	for _, msg := range req.Messages {
+		content := messageToGeminiContent(msg)
+		if msg.Role == "system" {
+			gr.SystemInstruction = &content
+		} else {
+			role := "user"
+			if msg.Role == "assistant" {
+				role = "model"
+			}
+			content.Role = role
+			gr.Contents = append(gr.Contents, content)
+		}
+	}
+
+	return gr
+}
+
+func messageToGeminiContent(msg ChatMessage) geminiContent {
+	c := geminiContent{}
+
+	switch v := msg.Content.(type) {
+	case string:
+		c.Parts = append(c.Parts, geminiPart{Text: v})
+	case []interface{}:
+		for _, part := range v {
+			if m, ok := part.(map[string]interface{}); ok {
+				partType, _ := m["type"].(string)
+				switch partType {
+				case "text":
+					text, _ := m["text"].(string)
+					c.Parts = append(c.Parts, geminiPart{Text: text})
+				case "image_url":
+					if imgURL, ok := m["image_url"].(map[string]interface{}); ok {
+						urlStr, _ := imgURL["url"].(string)
+						// Handle base64 data URIs
+						if strings.HasPrefix(urlStr, "data:") {
+							parts := strings.SplitN(urlStr, ",", 2)
+							if len(parts) == 2 {
+								mime := strings.TrimPrefix(strings.TrimSuffix(parts[0], ";base64"), "data:")
+								c.Parts = append(c.Parts, geminiPart{
+									InlineData: &geminiInline{MimeType: mime, Data: parts[1]},
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return c
+}
+
+type geminiResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+		FinishReason string `json:"finishReason"`
+	} `json:"candidates"`
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		TotalTokenCount      int `json:"totalTokenCount"`
+	} `json:"usageMetadata"`
+}
+
+func parseGeminiResponse(body []byte, model string) ChatResponse {
+	var gr geminiResponse
+	json.Unmarshal(body, &gr)
+
+	resp := ChatResponse{
+		ID:      "chatcmpl-kronaxis",
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   model,
+	}
+
+	if len(gr.Candidates) > 0 {
+		text := ""
+		for _, part := range gr.Candidates[0].Content.Parts {
+			text += part.Text
+		}
+		resp.Choices = append(resp.Choices, ChatChoice{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: text},
+			FinishReason: strings.ToLower(gr.Candidates[0].FinishReason),
+		})
+	}
+
+	if gr.UsageMetadata != nil {
+		resp.Usage = &ChatUsage{
+			PromptTokens:     gr.UsageMetadata.PromptTokenCount,
+			CompletionTokens: gr.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:      gr.UsageMetadata.TotalTokenCount,
+		}
+	}
+
+	return resp
+}
+
+// forwardToOllama transforms the request to Ollama's /api/chat format.
+func forwardToOllama(backend *Backend, _ []byte, req *ChatRequest) (int, map[string]string, []byte, error) {
+	url := backend.Config.URL + "/api/chat"
+
+	type ollamaMsg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type ollamaReq struct {
+		Model    string      `json:"model"`
+		Messages []ollamaMsg `json:"messages"`
+		Stream   bool        `json:"stream"`
+	}
+
+	or := ollamaReq{
+		Model:  backend.Config.ModelName,
+		Stream: false,
+	}
+	for _, msg := range req.Messages {
+		text := ""
+		if s, ok := msg.Content.(string); ok {
+			text = s
+		}
+		or.Messages = append(or.Messages, ollamaMsg{Role: msg.Role, Content: text})
+	}
+
+	body, _ := json.Marshal(or)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+
+	// Transform Ollama response to OpenAI format
+	var ollamaResp struct {
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	json.Unmarshal(respBody, &ollamaResp)
+
+	openAIResp := ChatResponse{
+		ID:      "chatcmpl-kronaxis",
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   backend.Config.ModelName,
+		Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: ollamaResp.Message.Content},
+			FinishReason: "stop",
+		}},
+	}
+	result, _ := json.Marshal(openAIResp)
+	return 200, map[string]string{"Content-Type": "application/json"}, result, nil
+}
+
+// handleStreaming proxies SSE responses for real-time use cases.
+func handleStreaming(
+	w http.ResponseWriter,
+	r *http.Request,
+	route RouteResult,
+	body []byte,
+	req *ChatRequest,
+	meta RouteRequest,
+	start time.Time,
+) {
+	backend := route.Backend
+	backend.ActiveReqs.Add(1)
+	defer backend.ActiveReqs.Add(-1)
+
+	url := backend.Config.URL + "/v1/chat/completions"
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		writeErrorJSON(w, 502, "failed to create request")
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if backend.Config.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+backend.Config.APIKey)
+	}
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		writeErrorJSON(w, 502, "backend connection failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErrorJSON(w, 500, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(200)
+
+	// Buffer for think tag stripping in streaming mode
+	buf := make([]byte, 4096)
+	inThinkBlock := false
+	var thinkBuf strings.Builder
+
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := string(buf[:n])
+
+			// Strip think tags from streaming content
+			chunk, inThinkBlock, thinkBuf = stripThinkTagsStreaming(chunk, inThinkBlock, thinkBuf)
+
+			if chunk != "" {
+				w.Write([]byte(chunk))
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	latency := time.Since(start)
+	logRequest(meta, route, 0, 0, latency, true, "")
+}
+
+// postProcessResponse handles think tag stripping and content branding.
+func postProcessResponse(body []byte, backend *Backend) []byte {
+	var resp ChatResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body // Not valid JSON, return as-is
+	}
+
+	modified := false
+
+	for i := range resp.Choices {
+		if content, ok := resp.Choices[i].Message.Content.(string); ok {
+			// Strip think tags
+			cleaned := stripThinkTags(content)
+
+			// Inject content branding if enabled
+			cleaned = injectContentBranding(cleaned)
+
+			if cleaned != content {
+				resp.Choices[i].Message.Content = cleaned
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return body
+	}
+
+	result, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+// injectContentBranding appends branding text if configured.
+func injectContentBranding(content string) string {
+	configMu.RLock()
+	branding := cfg.Server.Branding
+	configMu.RUnlock()
+
+	if !branding.ContentInject {
+		return content
+	}
+
+	// Skip injection for JSON responses
+	if branding.ContentSkipJSON {
+		trimmed := strings.TrimSpace(content)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			return content
+		}
+	}
+
+	return content + branding.ContentText
+}
+
+// addBrandingHeaders adds Kronaxis branding headers to the response.
+func addBrandingHeaders(w http.ResponseWriter, route RouteResult) {
+	configMu.RLock()
+	branding := cfg.Server.Branding
+	configMu.RUnlock()
+
+	if branding.Headers {
+		w.Header().Set("X-Powered-By", branding.HeaderName)
+		w.Header().Set("X-Kronaxis-Router-Version", version)
+		if route.Backend != nil {
+			w.Header().Set("X-Kronaxis-Backend", route.Backend.Config.Name)
+		}
+		if route.Rule != nil {
+			w.Header().Set("X-Kronaxis-Rule", route.Rule.Name)
+		}
+	}
+}
+
+// detectContentType inspects messages for vision content (image_url parts).
+func detectContentType(messages []ChatMessage) string {
+	for _, msg := range messages {
+		switch v := msg.Content.(type) {
+		case []interface{}:
+			for _, part := range v {
+				if m, ok := part.(map[string]interface{}); ok {
+					if t, _ := m["type"].(string); t == "image_url" {
+						return "vision"
+					}
+				}
+			}
+		}
+	}
+	return "text"
+}
+
+// estimateTokens returns token counts from the response usage object,
+// or estimates from text length (~4 chars per token).
+func estimateTokens(req *ChatRequest, resp *ChatResponse) (int, int) {
+	if resp != nil && resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+		return resp.Usage.PromptTokens, resp.Usage.CompletionTokens
+	}
+
+	// Estimate from text length
+	inputLen := 0
+	for _, msg := range req.Messages {
+		if s, ok := msg.Content.(string); ok {
+			inputLen += len(s)
+		}
+	}
+
+	outputLen := 0
+	if resp != nil {
+		for _, choice := range resp.Choices {
+			if s, ok := choice.Message.Content.(string); ok {
+				outputLen += len(s)
+			}
+		}
+	}
+
+	return inputLen / 4, outputLen / 4
+}
+
+func writeErrorJSON(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	resp := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    "router_error",
+		},
+	}
+	data, _ := json.Marshal(resp)
+	w.Write(data)
+}
+
+// jsonMarshal is a helper for consistent JSON encoding.
+func jsonMarshal(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
+}
