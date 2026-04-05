@@ -43,8 +43,10 @@ func recordStat(meta RouteRequest, route RouteResult, latency time.Duration, suc
 		liveStats.AvgLatencyMS = float64(totalLatencyNS.Load()) / float64(liveStats.TotalRequests) / 1e6
 	}
 
+	ruleName := ""
 	if route.Rule != nil {
-		liveStats.RequestsByRule[route.Rule.Name]++
+		ruleName = route.Rule.Name
+		liveStats.RequestsByRule[ruleName]++
 	}
 	svc := meta.Service
 	if svc == "" {
@@ -52,11 +54,20 @@ func recordStat(meta RouteRequest, route RouteResult, latency time.Duration, suc
 	}
 	liveStats.RequestsBySvc[svc]++
 
+	backendName := ""
 	if route.Backend != nil {
-		liveStats.RequestsByModel[route.Backend.Config.Name]++
+		backendName = route.Backend.Config.Name
+		liveStats.RequestsByModel[backendName]++
 	}
 
 	liveStats.UptimeSeconds = int64(time.Since(startupTime).Seconds())
+
+	// Record Prometheus metrics
+	statusCode := 200
+	if !success {
+		statusCode = 500
+	}
+	prom.RecordRequest(svc, backendName, ruleName, statusCode, latency)
 }
 
 func incActive()  { activeReqs.Add(1) }

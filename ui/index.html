@@ -393,13 +393,16 @@ function buildFlowNodes() {
     });
   });
 
-  // Edges from rules to their backends
+  // Edges from rules to their backends (with cost annotation)
   rules.forEach(rule => {
     (rule.backends || []).forEach((bName, idx) => {
+      // Find backend cost for annotation
+      const bInfo = backends.find(b => b.name === bName);
+      const costLabel = bInfo ? '$' + (bInfo.cost_output_1m || '?') + '/1M' : '';
       flowEdges.push({
         from: 'rule-' + rule.name,
         to: 'backend-' + bName,
-        label: '' + (idx + 1),
+        label: '#' + (idx + 1) + (costLabel ? ' ' + costLabel : ''),
       });
     });
   });

@@ -1,5 +1,7 @@
 # Kronaxis Router
 
+[![Build](https://github.com/kronaxis/kronaxis-router/actions/workflows/build.yml/badge.svg)](https://github.com/kronaxis/kronaxis-router/actions/workflows/build.yml)
+
 Intelligent LLM proxy that routes requests to the cheapest model capable of delivering the required output quality.
 
 A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper and does the job just as well. Kronaxis Router applies this principle to LLM inference: structured extraction goes to the small model, heavy reasoning goes to the large model, and bulk work goes to whatever is cheapest and available.
@@ -9,13 +11,19 @@ A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper and does 
 - **Cost-optimised routing** -- YAML rules match on task type, service, tier, priority, and content type. Route to the cheapest capable backend.
 - **Multi-backend support** -- Local vLLM, Gemini, OpenAI, Ollama. Mix local GPUs with cloud APIs. Automatic format adaptation.
 - **LoRA adapter routing** -- Knows which vLLM instances have which adapters loaded. Routes role-specific requests to the right instance.
+- **Backend failover** -- If the first backend returns 5xx or times out, automatically tries the next in the chain. Retry with backoff on transient errors.
 - **Throughput batching** -- Background/bulk requests collected over a 50ms window and dispatched as a single multi-prompt `/v1/completions` call to vLLM. Improves GPU utilisation on self-hosted models.
-- **Cost-saving batch API** -- Submit bulk work to provider batch APIs (OpenAI, Anthropic, Gemini, Mistral, Groq, Together, Fireworks) for **50% off** standard pricing. Async JSONL processing, typically completes in minutes to hours. Submit via `POST /api/batch/submit`, poll via `GET /api/batch`, retrieve results via `GET /api/batch/results`.
+- **Cost-saving batch API** -- Submit bulk work to provider batch APIs (OpenAI, Anthropic, Gemini, Mistral, Groq, Together, Fireworks) for **50% off** standard pricing. Async processing, typically completes in minutes. Auto-routes `bulk` priority requests.
+- **Response caching** -- SHA-256 keyed cache for deterministic requests (temperature=0). Identical prompts served from cache without calling the backend.
 - **Per-service budgets** -- Daily cost limits per calling service. Exceeding a budget triggers downgrade (cheaper model) or rejection.
-- **Health checks & failover** -- 30-second health probes. Automatic failover through the backend preference chain.
+- **Per-service rate limiting** -- Token bucket rate limiter per caller. Configurable requests/second and burst size.
+- **Prometheus metrics** -- `/metrics` endpoint with request counts, latency histograms, error rates, backend health, cache stats.
+- **Health checks & failover** -- 30-second health probes. Error tracking from actual requests (including cloud APIs).
 - **Streaming pass-through** -- SSE forwarding for real-time use cases (voice, chat).
 - **Qwen3 thinking mode** -- Auto-disables thinking mode and strips `<think>` tags for Qwen3/3.5 models.
 - **Hot-reloadable config** -- Edit `config.yaml` and rules update within 5 seconds. No restart needed.
+- **Embedded web UI** -- Dashboard, visual flow builder, backend manager, cost analysis, config editor.
+- **API authentication** -- Bearer token auth on `/api/*` endpoints via `ROUTER_API_TOKEN` env var.
 - **OpenAI API compatible** -- Drop-in replacement. Services change one URL.
 
 ## Quick Start
@@ -38,6 +46,70 @@ docker run -p 8050:8050 -v $(pwd)/config.yaml:/app/config.yaml kronaxis-router
 ```
 
 Point your services at `http://localhost:8050/v1/chat/completions` instead of calling LLM backends directly.
+
+## Usage Examples
+
+### Send a request (routes to cheapest capable backend)
+
+```bash
+curl http://localhost:8050/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Kronaxis-Service: my-api" \
+  -H "X-Kronaxis-CallType: summarise" \
+  -H "X-Kronaxis-Tier: 2" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Summarise this in one sentence: ..."}],
+    "max_tokens": 100
+  }'
+```
+
+### Route heavy reasoning to the large model
+
+```bash
+curl http://localhost:8050/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Kronaxis-Service: my-api" \
+  -H "X-Kronaxis-Tier: 1" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Plan a 3-phase migration strategy for..."}],
+    "max_tokens": 2000
+  }'
+```
+
+### Submit bulk work for 50% off (async batch API)
+
+```bash
+curl -X POST http://localhost:8050/api/batch/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "backend": "cloud-fast",
+    "callback_url": "https://my-app.com/webhook",
+    "requests": [
+      {"custom_id": "req-1", "body": {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "..."}], "max_tokens": 100}},
+      {"custom_id": "req-2", "body": {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "..."}], "max_tokens": 100}}
+    ]
+  }'
+```
+
+### Check cost dashboard
+
+```bash
+curl http://localhost:8050/api/costs?period=today
+```
+
+### Check Prometheus metrics
+
+```bash
+curl http://localhost:8050/metrics
+```
+
+### Check backend health
+
+```bash
+curl http://localhost:8050/health
+```
 
 ## How Routing Works
 
@@ -126,6 +198,14 @@ budgets:
 | `/api/batch/submit` | POST | Submit async batch job (50% off) |
 | `/api/batch` | GET | List all batch jobs or get status by `?id=` |
 | `/api/batch/results` | GET | Retrieve results of a completed batch |
+| `/api/batch/stream` | GET | SSE stream for batch job updates |
+| `/api/rules` | GET/POST/PUT/DELETE | CRUD for routing rules |
+| `/api/budgets` | GET/PUT | View/update per-service budgets |
+| `/api/config/yaml` | GET/PUT | View/update raw YAML config |
+| `/api/config/reload` | POST | Force config reload from disk |
+| `/api/stats` | GET | Live request statistics |
+| `/metrics` | GET | Prometheus metrics |
+| `/` | GET | Embedded web UI |
 
 ## Environment Variables
 
@@ -134,7 +214,27 @@ budgets:
 | `CONFIG_PATH` | `config.yaml` | Path to configuration file |
 | `ROUTER_PORT` | `8050` | HTTP listen port |
 | `DATABASE_URL` | (empty) | PostgreSQL connection string for cost logging |
+| `ROUTER_API_TOKEN` | (empty) | Bearer token for `/api/*` auth. Unset = open access. |
+| `CACHE_MAX_SIZE` | `1000` | Max cached responses (0 = disabled) |
+| `CACHE_TTL_SECONDS` | `3600` | Cache entry TTL in seconds |
+| `BATCH_DATA_DIR` | `/tmp/kronaxis-router-batches` | Directory for batch job data |
 | `GEMINI_API_KEY` | (empty) | Referenced via `env:GEMINI_API_KEY` in config |
+
+## Rate Limiting
+
+Per-service request rate limits, configured in `config.yaml`:
+
+```yaml
+rate_limits:
+  default:
+    requests_per_second: 100
+    burst_size: 200
+  batch-worker:
+    requests_per_second: 10
+    burst_size: 20
+```
+
+Only the `/v1/chat/completions` endpoint is rate limited. API and UI endpoints are not.
 
 ## Response Headers
 
@@ -145,6 +245,7 @@ X-Powered-By: Kronaxis Router
 X-Kronaxis-Router-Version: 1.0.0
 X-Kronaxis-Backend: local-large
 X-Kronaxis-Rule: heavy-reasoning
+X-Kronaxis-Cache: HIT          # only on cache hits
 ```
 
 ## Database (Optional)

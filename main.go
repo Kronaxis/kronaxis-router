@@ -25,6 +25,7 @@ var (
 	batchMgr    *BatchManager
 	costs       *CostTracker
 	respCache   *ResponseCache
+	rateLim     *RateLimiter
 	logger      = log.New(os.Stdout, "[router] ", log.LstdFlags|log.Lmsgprefix)
 	startupTime = time.Now()
 )
@@ -36,8 +37,12 @@ func main() {
 	port := env("ROUTER_PORT", "8050")
 	databaseURL := env("DATABASE_URL", "")
 
-	// Load config
+	// Load config (generate default if missing)
 	var err error
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+		logger.Printf("no config file at %s, generating default", configPath)
+		generateDefaultConfig(configPath)
+	}
 	cfg, err = loadConfig(configPath)
 	if err != nil {
 		logger.Fatalf("failed to load config: %v", err)
@@ -72,6 +77,7 @@ func main() {
 	batchMgr = newBatchManager(env("BATCH_DATA_DIR", ""))
 	costs = newCostTracker(cfg.Budgets, db)
 	respCache = newResponseCache(envInt("CACHE_MAX_SIZE", 1000), envInt("CACHE_TTL_SECONDS", 3600))
+	rateLim = newRateLimiter(cfg.RateLimits)
 
 	// Start background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,10 +102,11 @@ func main() {
 	mux.HandleFunc("/api/batch/submit", handleBatchSubmit)
 	mux.HandleFunc("/api/batch/results", handleBatchResults)
 	mux.HandleFunc("/api/batch/stream", handleBatchStream)
+	mux.HandleFunc("/metrics", handleMetrics)
 	registerUI(mux)
 
-	// Wrap with middleware (auth -> CORS -> logging)
-	handler := corsMiddleware(authMiddleware(loggingMiddleware(mux)))
+	// Wrap with middleware (rate limit -> auth -> CORS -> logging)
+	handler := corsMiddleware(authMiddleware(rateLimitMiddleware(loggingMiddleware(mux))))
 
 	srv := &http.Server{
 		Addr:         ":" + port,
@@ -181,6 +188,50 @@ func runMigrations() {
 		if _, err := db.Exec(m); err != nil {
 			logger.Printf("migration warning: %v", err)
 		}
+	}
+}
+
+func generateDefaultConfig(path string) {
+	defaultYAML := `# Kronaxis Router - Auto-generated default config
+# See https://github.com/kronaxis/kronaxis-router for full documentation.
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 120s
+  branding:
+    headers: true
+    header_name: "Kronaxis Router"
+
+backends:
+  - name: local
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "default"
+    cost_input_1m: 0.01
+    cost_output_1m: 0.01
+    capabilities: [json_output]
+    max_concurrent: 4
+    health_endpoint: "/v1/models"
+
+rules:
+  - name: default
+    priority: 100
+    match: {}
+    backends: [local]
+
+defaults:
+  fallback_chain: [local]
+  default_timeout_ms: 120000
+
+batching:
+  enabled: true
+  window_ms: 50
+  max_batch_size: 8
+  priority_bypass: [interactive]
+`
+	if err := os.WriteFile(path, []byte(defaultYAML), 0644); err != nil {
+		logger.Printf("WARNING: failed to write default config: %v", err)
 	}
 }
 

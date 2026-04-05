@@ -13,12 +13,13 @@ import (
 
 // Config is the top-level configuration structure.
 type Config struct {
-	Server   ServerConfig            `yaml:"server"`
-	Backends []BackendConfig         `yaml:"backends"`
-	Rules    []RoutingRule           `yaml:"rules"`
-	Budgets  map[string]BudgetConfig `yaml:"budgets"`
-	Batching BatchingConfig          `yaml:"batching"`
-	Defaults DefaultsConfig          `yaml:"defaults"`
+	Server     ServerConfig                `yaml:"server"`
+	Backends   []BackendConfig             `yaml:"backends"`
+	Rules      []RoutingRule               `yaml:"rules"`
+	Budgets    map[string]BudgetConfig     `yaml:"budgets"`
+	RateLimits map[string]RateLimitConfig  `yaml:"rate_limits"`
+	Batching   BatchingConfig              `yaml:"batching"`
+	Defaults   DefaultsConfig              `yaml:"defaults"`
 }
 
 type ServerConfig struct {
@@ -248,6 +249,7 @@ func watchConfig(ctx context.Context, path string) {
 			rtr.updateRules(newCfg.Rules, newCfg.Defaults)
 			bat.updateConfig(newCfg.Batching)
 			costs.updateBudgets(newCfg.Budgets)
+			rateLim.updateLimits(newCfg.RateLimits)
 			configMu.Unlock()
 
 			logger.Printf("config reloaded: %d backends, %d rules",

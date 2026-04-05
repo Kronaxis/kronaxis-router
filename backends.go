@@ -201,13 +201,15 @@ func (bp *BackendPool) updateBackends(configs []BackendConfig) {
 }
 
 type backendStatusInfo struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Type        string `json:"type"`
-	URL         string `json:"url"`
-	ActiveReqs  int64  `json:"active_requests"`
-	LastCheckMS int64  `json:"last_check_ms"`
-	LatencyMS   int64  `json:"latency_ms"`
+	Name         string  `json:"name"`
+	Status       string  `json:"status"`
+	Type         string  `json:"type"`
+	URL          string  `json:"url"`
+	ActiveReqs   int64   `json:"active_requests"`
+	LastCheckMS  int64   `json:"last_check_ms"`
+	LatencyMS    int64   `json:"latency_ms"`
+	CostInput1M  float64 `json:"cost_input_1m"`
+	CostOutput1M float64 `json:"cost_output_1m"`
 }
 
 func (bp *BackendPool) allStatuses() []backendStatusInfo {
@@ -218,13 +220,15 @@ func (bp *BackendPool) allStatuses() []backendStatusInfo {
 	for _, b := range bp.backends {
 		b.mu.RLock()
 		info := backendStatusInfo{
-			Name:        b.Config.Name,
-			Status:      b.Status.String(),
-			Type:        b.Config.Type,
-			URL:         b.Config.URL,
-			ActiveReqs:  b.ActiveReqs.Load(),
-			LastCheckMS: time.Since(b.LastCheck).Milliseconds(),
-			LatencyMS:   b.LastLatency.Milliseconds(),
+			Name:         b.Config.Name,
+			Status:       b.Status.String(),
+			Type:         b.Config.Type,
+			URL:          b.Config.URL,
+			ActiveReqs:   b.ActiveReqs.Load(),
+			LastCheckMS:  time.Since(b.LastCheck).Milliseconds(),
+			LatencyMS:    b.LastLatency.Milliseconds(),
+			CostInput1M:  b.Config.CostInput1M,
+			CostOutput1M: b.Config.CostOutput1M,
 		}
 		b.mu.RUnlock()
 		result = append(result, info)
