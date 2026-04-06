@@ -99,6 +99,9 @@ func (al *AuditLogger) Log(entry AuditEntry) {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 
+	if al.file == nil {
+		return
+	}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return
@@ -131,6 +134,7 @@ func (al *AuditLogger) rotate() {
 	f, err := os.OpenFile(al.config.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		logger.Printf("audit log rotate failed: %v", err)
+		al.file = nil // prevent writes to closed file
 		return
 	}
 	al.file = f

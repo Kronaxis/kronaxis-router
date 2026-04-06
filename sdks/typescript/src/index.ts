@@ -155,11 +155,24 @@ export class KronaxisRouter {
 
     try {
       const response = await globalThis.fetch(url, { ...init, signal: controller.signal });
-      const data = await response.json();
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        const text = await response.text().catch(() => '');
+        throw new RouterError(response.status, text || `HTTP ${response.status}`);
+      }
       if (!response.ok) {
         throw new RouterError(response.status, data?.error?.message || JSON.stringify(data));
       }
       return data;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      if (e instanceof RouterError) throw e;
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        throw new RouterError(0, `request timed out after ${this.timeout}ms`);
+      }
+      throw new RouterError(0, e instanceof Error ? e.message : String(e));
     } finally {
       clearTimeout(timeoutId);
     }

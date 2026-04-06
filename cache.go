@@ -45,8 +45,8 @@ func newResponseCache(maxSize int, ttlSeconds int) *ResponseCache {
 // cacheKey generates a deterministic hash from the request.
 // Only caches when temperature is 0 (deterministic output).
 func cacheKey(req *ChatRequest) (string, bool) {
-	// Only cache deterministic requests (temperature 0 or nil with no randomness)
-	if req.Temperature != nil && *req.Temperature > 0 {
+	// Only cache explicitly deterministic requests (temperature must be set to 0)
+	if req.Temperature == nil || *req.Temperature > 0 {
 		return "", false
 	}
 
@@ -55,13 +55,19 @@ func cacheKey(req *ChatRequest) (string, bool) {
 		return "", false
 	}
 
-	// Build a canonical key from model + messages
+	// Build a canonical key from all parameters that affect output
 	key := struct {
-		Model    string        `json:"m"`
-		Messages []ChatMessage `json:"msgs"`
+		Model     string        `json:"m"`
+		Messages  []ChatMessage `json:"msgs"`
+		MaxTokens int           `json:"mt"`
+		TopP      *float64      `json:"tp,omitempty"`
+		N         int           `json:"n,omitempty"`
 	}{
-		Model:    req.Model,
-		Messages: req.Messages,
+		Model:     req.Model,
+		Messages:  req.Messages,
+		MaxTokens: req.MaxTokens,
+		TopP:      req.TopP,
+		N:         req.N,
 	}
 
 	data, err := json.Marshal(key)

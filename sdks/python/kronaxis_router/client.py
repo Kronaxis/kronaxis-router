@@ -155,6 +155,8 @@ class KronaxisRouter:
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else str(e)
             raise RouterError(e.code, error_body) from e
+        except urllib.error.URLError as e:
+            raise RouterError(0, f"connection failed: {e.reason}") from e
 
         if not result.get("choices"):
             raise RouterError(0, "no choices in response")
@@ -207,8 +209,14 @@ class KronaxisRouter:
             headers["Authorization"] = f"Bearer {self.api_token}"
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else str(e)
+            raise RouterError(e.code, error_body) from e
+        except urllib.error.URLError as e:
+            raise RouterError(0, f"connection failed: {e.reason}") from e
 
 
 class RouterError(Exception):

@@ -760,6 +760,10 @@ func handleBatchSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.CallbackURL != "" {
+		if err := ValidateExternalURL(req.CallbackURL); err != nil {
+			writeErrorJSON(w, 400, "invalid callback URL: "+err.Error())
+			return
+		}
 		batchMgr.SetCallback(job.ID, req.CallbackURL)
 	}
 

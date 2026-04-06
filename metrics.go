@@ -83,10 +83,12 @@ func (m *Metrics) RecordRequest(service, backend, rule string, statusCode int, l
 	m.getCounter(m.latencySumMS, label).Add(ms)
 	m.getCounter(m.latencyCount, label).Add(1)
 
+	// Record into the single matching bucket (handleMetrics computes cumulative sums)
 	buckets := m.getBuckets(label)
 	for i, bound := range bucketBounds {
 		if float64(ms) <= bound {
 			buckets[i].Add(1)
+			break // Only increment the first matching bucket
 		}
 	}
 }

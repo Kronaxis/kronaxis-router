@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -83,6 +86,37 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
+// ValidateExternalURL checks a URL is not targeting internal/private networks (SSRF prevention).
+func ValidateExternalURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https, got %s", parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL has no host")
+	}
+	// Block metadata endpoints
+	if host == "169.254.169.254" || host == "metadata.google.internal" {
+		return fmt.Errorf("URL targets cloud metadata endpoint")
+	}
+	// Block localhost
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+		return fmt.Errorf("URL targets localhost")
+	}
+	// Block private networks
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("URL targets private/internal network")
+		}
+	}
+	return nil
+}
+
 // Flush implements http.Flusher so streaming SSE works through the middleware.
 func (sw *statusWriter) Flush() {
 	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
@@ -115,7 +149,7 @@ func authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != apiToken {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(apiToken)) != 1 {
 			writeErrorJSON(w, 403, "invalid token")
 			return
 		}

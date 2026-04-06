@@ -269,13 +269,14 @@ func (bp *BackendPool) checkAll() {
 }
 
 func (bp *BackendPool) checkOne(b *Backend) {
-	// Skip health checks for cloud APIs (Gemini, OpenAI) -- they are always "available"
+	// Cloud APIs: don't probe, but don't reset failure counter set by actual traffic
 	if b.Config.Type == "gemini" || b.Config.Type == "openai" {
 		b.mu.Lock()
-		b.Status = StatusHealthy
 		b.LastCheck = time.Now()
-		b.LastLatency = 0
-		b.Failures = 0
+		// Only reset to healthy if no recent traffic failures
+		if b.Failures == 0 {
+			b.Status = StatusHealthy
+		}
 		b.mu.Unlock()
 		return
 	}

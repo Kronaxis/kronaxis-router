@@ -299,6 +299,14 @@ func handleBackends(w http.ResponseWriter, r *http.Request) {
 			writeErrorJSON(w, 400, "name and url are required")
 			return
 		}
+		// SSRF prevention: validate URL is not targeting internal networks
+		if err := ValidateExternalURL(cfg.URL); err != nil {
+			// Allow private IPs only if ROUTER_ALLOW_PRIVATE_BACKENDS is set
+			if env("ROUTER_ALLOW_PRIVATE_BACKENDS", "") != "true" {
+				writeErrorJSON(w, 400, "invalid backend URL: "+err.Error())
+				return
+			}
+		}
 		cfg.Dynamic = true
 		pool.Register(cfg)
 		logger.Printf("dynamic backend registered: %s -> %s", cfg.Name, cfg.URL)

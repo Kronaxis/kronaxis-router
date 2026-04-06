@@ -544,11 +544,14 @@ function renderPalette() {
   const el = document.getElementById('flow-palette');
   el.innerHTML = backends.map(b => `
     <div class="flex items-center gap-2 p-1.5 rounded bg-slate-800 text-xs cursor-pointer hover:bg-slate-700"
-         onclick="showNodeProps(flowNodes.find(n=>n.id==='backend-${b.name}'))">
+         data-backend="${esc(b.name)}">
       <span class="w-2 h-2 rounded-full ${b.status==='healthy'?'bg-green-500':'bg-red-500'}"></span>
-      ${b.name}
+      ${esc(b.name)}
     </div>
   `).join('');
+  el.querySelectorAll('[data-backend]').forEach(el => {
+    el.addEventListener('click', () => showNodeProps(flowNodes.find(n => n.id === 'backend-' + el.dataset.backend)));
+  });
 }
 
 function showNodeProps(node) {
@@ -567,11 +570,16 @@ function showNodeProps(node) {
         ${r.max_cost_1m ? '<div><span class="text-xs text-slate-400">Cost Ceiling</span><div>$' + r.max_cost_1m + '/1M tokens</div></div>' : ''}
         ${r.required_capabilities?.length ? '<div><span class="text-xs text-slate-400">Required</span><div>' + r.required_capabilities.join(', ') + '</div></div>' : ''}
         <div class="flex gap-2 pt-2">
-          <button onclick="editRule('${r.name}')" class="px-2 py-1 bg-sky-600 rounded text-xs">Edit</button>
-          <button onclick="deleteRule('${r.name}')" class="px-2 py-1 bg-red-600 rounded text-xs">Delete</button>
+          <button data-edit-rule="${esc(r.name)}" class="px-2 py-1 bg-sky-600 rounded text-xs">Edit</button>
+          <button data-delete-rule="${esc(r.name)}" class="px-2 py-1 bg-red-600 rounded text-xs">Delete</button>
         </div>
       </div>
     `;
+    // Bind edit/delete buttons via event delegation
+    const editBtn = document.querySelector('[data-edit-rule]');
+    if (editBtn) editBtn.addEventListener('click', () => editRule(editBtn.dataset.editRule));
+    const delBtn = document.querySelector('[data-delete-rule]');
+    if (delBtn) delBtn.addEventListener('click', () => deleteRule(delBtn.dataset.deleteRule));
   } else if (node.type === 'backend') {
     const b = node.data.backend;
     el.innerHTML = `
@@ -724,10 +732,11 @@ function renderBackends() {
         <div class="flex justify-between"><span>Last Check</span><span class="text-slate-200">${b.last_check_ms < 1000 ? 'just now' : Math.round(b.last_check_ms/1000) + 's ago'}</span></div>
       </div>
       <div class="mt-3 pt-3 border-t border-slate-700 flex gap-2">
-        <button onclick="removeBackend('${b.name}')" class="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs">Remove</button>
+        <button data-remove-backend="${esc(b.name)}" class="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs">Remove</button>
       </div>
     </div>
   `).join('');
+  bindRemoveButtons();
 }
 
 function showAddBackend() {
@@ -775,6 +784,13 @@ async function saveNewBackend() {
   await api('/api/backends', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(backend) });
   closeModal();
   await loadBackends();
+}
+
+// Bind remove buttons after render
+function bindRemoveButtons() {
+  document.querySelectorAll('[data-remove-backend]').forEach(btn => {
+    btn.addEventListener('click', () => removeBackend(btn.dataset.removeBackend));
+  });
 }
 
 async function removeBackend(name) {

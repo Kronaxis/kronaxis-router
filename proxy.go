@@ -691,12 +691,10 @@ func handleStreaming(
 	start time.Time,
 ) {
 	backend := route.Backend
-	backend.ActiveReqs.Add(1)
-	defer backend.ActiveReqs.Add(-1)
 
 	// Only OpenAI-compatible backends support streaming via SSE
 	if backend.Config.Type == "gemini" || backend.Config.Type == "ollama" {
-		// Fall back to non-streaming: send request, return full response
+		// Fall back to non-streaming (forwardToBackend manages its own ActiveReqs)
 		statusCode, respHeaders, respBody, err := forwardToBackend(backend, route.ModelName, body, req, meta)
 		latency := time.Since(start)
 		if err != nil {
@@ -720,6 +718,10 @@ func handleStreaming(
 		logRequest(meta, route, inputTokens, outputTokens, latency, success, "")
 		return
 	}
+
+	// Track active requests for the OpenAI streaming path
+	backend.ActiveReqs.Add(1)
+	defer backend.ActiveReqs.Add(-1)
 
 	url := backend.Config.URL + "/v1/chat/completions"
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))

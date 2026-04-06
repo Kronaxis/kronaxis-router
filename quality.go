@@ -30,6 +30,7 @@ type QualityValidator struct {
 	checked    atomic.Int64
 	passed     atomic.Int64
 	failed     atomic.Int64
+	sem        chan struct{} // bounds concurrent validation goroutines
 	mu         sync.RWMutex
 }
 
@@ -45,6 +46,7 @@ func newQualityValidator(config QualityConfig) *QualityValidator {
 		config:     config,
 		scores:     make(map[string]*qualityScore),
 		promotions: make(map[string]bool),
+		sem:        make(chan struct{}, 10), // max 10 concurrent quality checks
 	}
 }
 
@@ -88,7 +90,15 @@ func (qv *QualityValidator) ValidateAsync(
 		return
 	}
 
+	// Bounded concurrency: skip if semaphore full
+	select {
+	case qv.sem <- struct{}{}:
+	default:
+		return // Too many concurrent validations, skip
+	}
+
 	go func() {
+		defer func() { <-qv.sem }()
 		// Send same request to reference model
 		refReq := *req
 		refReq.Model = refBackend.Config.ModelName
