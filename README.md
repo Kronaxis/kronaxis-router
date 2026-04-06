@@ -270,6 +270,130 @@ services:
       - DATABASE_URL=postgres://user:pass@db:5432/mydb?sslmode=disable
 ```
 
+## LoRA Adapter Routing
+
+If your vLLM instance serves multiple LoRA adapters, list them in the backend config:
+
+```yaml
+backends:
+  - name: my-vllm
+    url: "http://localhost:8000"
+    type: vllm
+    lora_adapters: [default, sdr, closer, researcher]
+```
+
+Set the `model` field in the OpenAI request to the adapter name. The router will automatically route to a backend that has it loaded:
+
+```bash
+curl http://localhost:8050/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "sdr", "messages": [{"role": "user", "content": "Draft cold outreach..."}]}'
+```
+
+If no backend has the requested adapter, the router falls back to any available backend (system prompt provides role context instead of LoRA).
+
+## Batch API Workflow (50% Off)
+
+For non-time-sensitive work, submit to the async batch API. Most providers offer 50% off standard pricing.
+
+**Submit a batch:**
+```bash
+curl -X POST http://localhost:8050/api/batch/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "backend": "cloud-fast",
+    "callback_url": "https://my-app.com/webhook",
+    "requests": [
+      {"custom_id": "req-1", "body": {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Summarise..."}], "max_tokens": 200}},
+      {"custom_id": "req-2", "body": {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Classify..."}], "max_tokens": 50}}
+    ]
+  }'
+```
+
+**Poll for status:**
+```bash
+curl http://localhost:8050/api/batch?id=batch_1234567890
+```
+
+**Stream updates (SSE):**
+```bash
+curl http://localhost:8050/api/batch/stream?id=batch_1234567890
+```
+
+**Get results:**
+```bash
+curl http://localhost:8050/api/batch/results?id=batch_1234567890
+```
+
+Results are also delivered via webhook if `callback_url` was set. Supported providers: OpenAI, Anthropic, Gemini, Mistral, Groq, Together AI, Fireworks AI.
+
+Requests with `X-Kronaxis-Priority: bulk` are **automatically** submitted to the batch API when the backend supports it, returning a job ID instead of blocking.
+
+## Streaming
+
+Streaming (`"stream": true`) is supported for vLLM and OpenAI-compatible backends. The router proxies SSE chunks in real time with `<think>` tag stripping.
+
+For Gemini and Ollama backends, streaming requests fall back to a non-streaming response (these providers use different streaming protocols).
+
+Streaming responses bypass batching and caching.
+
+## Health Checks
+
+The router probes each backend every 30 seconds (configurable):
+- **vLLM/Ollama**: GET to the configured `health_endpoint` (default `/v1/models`)
+- **Cloud APIs**: tracked via actual request success/failure (no probe needed)
+
+Status transitions: healthy -> degraded (1 failure) -> down (3+ failures) -> healthy (1 success). Backends marked `down` are skipped during routing.
+
+Actual request errors from any backend (including cloud) also update the health status.
+
+## Monitoring with Prometheus
+
+Scrape the `/metrics` endpoint with Prometheus:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: kronaxis-router
+    static_configs:
+      - targets: ['localhost:8050']
+```
+
+Available metrics:
+- `kronaxis_router_requests_total{service,backend,rule}` -- request counter
+- `kronaxis_router_errors_total{service,backend,rule}` -- error counter (4xx/5xx)
+- `kronaxis_router_request_duration_ms_bucket{le}` -- latency histogram
+- `kronaxis_router_cache_hits_total` / `kronaxis_router_cache_misses_total`
+- `kronaxis_router_batch_submitted_total` / `kronaxis_router_batch_completed_total`
+- `kronaxis_router_backend_healthy{backend,type}` -- 1=healthy, 0=down
+- `kronaxis_router_backend_active_requests{backend,type}` -- in-flight count
+- `kronaxis_router_uptime_seconds`
+
+## Performance Tuning
+
+| Setting | Default | Guidance |
+|---------|---------|----------|
+| `max_concurrent` per backend | 10 | Match your GPU's max concurrent requests (vLLM: check `--max-num-seqs`) |
+| `batching.window_ms` | 50 | Lower = less latency, higher = better GPU utilisation. Only affects background/bulk. |
+| `batching.max_batch_size` | 8 | Match vLLM's batch size. Larger = fewer HTTP calls but more memory. |
+| `CACHE_MAX_SIZE` | 1000 | Increase for repeated prompts (e.g. classification pipelines). Each entry is ~1-10KB. |
+| `CACHE_TTL_SECONDS` | 3600 | Lower for frequently changing data. 0 = disabled. |
+| Rate limits | None | Set per-service to prevent a runaway job from starving interactive traffic. |
+
+## Troubleshooting
+
+**All requests return 503:** No healthy backends. Check `/health` -- are backends reachable? Check URLs, firewalls, and that vLLM is actually running.
+
+**Requests are slow but succeed:** Check if batching is adding latency to non-bulk requests. Set `batching.enabled: false` or ensure your priority is `normal` (not `background`).
+
+**Budget rejected (429):** Daily cost limit exceeded. Check `/api/costs` to see breakdown. Increase the limit or set `action: downgrade` instead of `reject`.
+
+**Cache never hits:** Only temperature=0 requests are cached. Streaming requests are never cached. Check `CACHE_MAX_SIZE > 0`.
+
+**LoRA adapter not found:** The router routes to any healthy backend if no backend has the adapter. Check your backend config lists the adapter in `lora_adapters`.
+
+**Gemini returns 403/429:** API key invalid or rate limited. The router passes 4xx errors through to the caller. Check your key and Gemini quota.
+
 ## Licence
 
 Apache 2.0. See [LICENSE](LICENSE).
