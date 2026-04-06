@@ -1,0 +1,67 @@
+# Example: cloud APIs only (no local GPUs)
+# Good for: serverless, teams without GPU infrastructure
+
+server:
+  port: 8050
+  health_check_interval: 30s
+
+backends:
+  - name: gemini-flash
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-flash"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 0.15
+    cost_output_1m: 0.60
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 50
+
+  - name: openai-4o-mini
+    url: "https://api.openai.com"
+    type: openai
+    model_name: "gpt-4o-mini"
+    api_key: "env:OPENAI_API_KEY"
+    cost_input_1m: 0.15
+    cost_output_1m: 0.60
+    capabilities: [json_output]
+    max_concurrent: 50
+
+  - name: openai-4o
+    url: "https://api.openai.com"
+    type: openai
+    model_name: "gpt-4o"
+    api_key: "env:OPENAI_API_KEY"
+    cost_input_1m: 2.50
+    cost_output_1m: 10.00
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 30
+
+rules:
+  # Cheap tasks go to the cheapest model
+  - name: extraction
+    priority: 120
+    match: { tier: 2 }
+    backends: [gemini-flash, openai-4o-mini]
+    max_cost_1m: 1.00
+
+  # Heavy reasoning goes to the powerful model
+  - name: reasoning
+    priority: 110
+    match: { tier: 1 }
+    backends: [openai-4o, gemini-flash]
+
+  # Vision tasks need vision-capable backends
+  - name: vision
+    priority: 130
+    match: { content_type: vision }
+    backends: [gemini-flash, openai-4o]
+    required_capabilities: [vision]
+
+defaults:
+  fallback_chain: [gemini-flash, openai-4o-mini, openai-4o]
+
+budgets:
+  default:
+    daily_limit_usd: 50.00
+    action: downgrade
+    downgrade_target: gemini-flash

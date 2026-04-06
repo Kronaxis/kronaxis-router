@@ -1,0 +1,21 @@
+{
+  "name": "kronaxis-router",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Kronaxis Router - intelligent LLM proxy",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["llm", "proxy", "router", "openai", "cost-optimization"],
+  "author": "Kronaxis <dev@kronaxis.co.uk>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kronaxis/kronaxis-router"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

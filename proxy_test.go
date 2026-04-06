@@ -53,6 +53,9 @@ func setupTestRouter(backends []BackendConfig, rules []RoutingRule) {
 	respCache = newResponseCache(100, 3600)
 	rateLim = newRateLimiter(nil)
 	batchMgr = newBatchManager("")
+	qualVal = newQualityValidator(QualityConfig{})
+	auditLog = newAuditLogger(AuditConfig{})
+	abTests = newABTestManager(nil)
 	cfg = &Config{
 		Server: ServerConfig{
 			Branding: BrandingConfig{Headers: true, HeaderName: "Test Router"},

@@ -1,0 +1,25 @@
+# Example: local vLLM only (no cloud APIs)
+# Good for: air-gapped environments, cost-sensitive, single GPU
+
+server:
+  port: 8050
+  health_check_interval: 30s
+
+backends:
+  - name: local-gpu
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "Qwen/Qwen2.5-7B-Instruct"
+    cost_input_1m: 0.005
+    cost_output_1m: 0.005
+    capabilities: [json_output]
+    max_concurrent: 8
+
+rules:
+  - name: all-traffic
+    priority: 100
+    match: {}
+    backends: [local-gpu]
+
+defaults:
+  fallback_chain: [local-gpu]

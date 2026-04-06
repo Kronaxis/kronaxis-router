@@ -26,6 +26,9 @@ var (
 	costs       *CostTracker
 	respCache   *ResponseCache
 	rateLim     *RateLimiter
+	qualVal     *QualityValidator
+	auditLog    *AuditLogger
+	abTests     *ABTestManager
 	logger      = log.New(os.Stdout, "[router] ", log.LstdFlags|log.Lmsgprefix)
 	startupTime = time.Now()
 )
@@ -78,6 +81,17 @@ func main() {
 	costs = newCostTracker(cfg.Budgets, db)
 	respCache = newResponseCache(envInt("CACHE_MAX_SIZE", 1000), envInt("CACHE_TTL_SECONDS", 3600))
 	rateLim = newRateLimiter(cfg.RateLimits)
+	qualVal = newQualityValidator(QualityConfig{
+		Enabled:    env("QUALITY_ENABLED", "") == "true",
+		SampleRate: 0.05,
+		Threshold:  0.6,
+	})
+	auditLog = newAuditLogger(AuditConfig{
+		Enabled:    env("AUDIT_ENABLED", "") == "true",
+		LogFile:    env("AUDIT_LOG_FILE", "audit.jsonl"),
+		MaxEntries: envInt("AUDIT_MAX_ENTRIES", 100000),
+	})
+	abTests = newABTestManager(nil)
 
 	// Start background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,6 +117,7 @@ func main() {
 	mux.HandleFunc("/api/batch/results", handleBatchResults)
 	mux.HandleFunc("/api/batch/stream", handleBatchStream)
 	mux.HandleFunc("/metrics", handleMetrics)
+	mux.HandleFunc("/api/abtests", handleABTests)
 	registerUI(mux)
 
 	// Wrap with middleware (rate limit -> auth -> CORS -> logging)
@@ -138,6 +153,7 @@ func main() {
 	if db != nil {
 		db.Close()
 	}
+	auditLog.Close()
 	logger.Println("stopped")
 }
 
@@ -159,6 +175,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"backends_healthy": healthy,
 		"backends":         backends,
 		"cache":            respCache.Stats(),
+		"quality":          qualVal.Stats(),
 	})
 }
 

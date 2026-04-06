@@ -1,0 +1,64 @@
+# Kronaxis Router Python SDK
+
+Zero-dependency Python client for [Kronaxis Router](https://github.com/kronaxis/kronaxis-router).
+
+```bash
+pip install kronaxis-router
+```
+
+## Quick Start
+
+```python
+from kronaxis_router import KronaxisRouter, Tier
+
+router = KronaxisRouter("http://localhost:8050", service="my-app")
+
+# Simple chat (auto-classified tier)
+response = router.chat("What is the capital of France?")
+
+# Force tier 2 (cheap model) for extraction
+data = router.chat(
+    "Extract the email from: Contact us at hello@example.com",
+    tier=Tier.LIGHT,
+    call_type="extraction",
+)
+
+# Force tier 1 (powerful model) for reasoning
+plan = router.chat(
+    "Design a 3-phase migration strategy for...",
+    tier=Tier.HEAVY,
+    max_tokens=2000,
+)
+
+# LoRA adapter routing
+email = router.chat(
+    "Draft a cold outreach email...",
+    model="sdr",  # Routes to backend with SDR adapter
+    system="You are a sales development representative.",
+)
+
+# Batch submit (50% off)
+job = router.batch_submit(
+    backend="cloud-fast",
+    requests=[
+        {"custom_id": "1", "body": {"model": "default", "messages": [{"role": "user", "content": "..."}], "max_tokens": 100}},
+        {"custom_id": "2", "body": {"model": "default", "messages": [{"role": "user", "content": "..."}], "max_tokens": 100}},
+    ],
+    callback_url="https://my-app.com/webhook",
+)
+print(f"Batch job: {job['id']}")
+
+# Check costs
+costs = router.costs()
+print(f"Today's spend: ${costs['daily'].get('my-app', 0):.4f}")
+```
+
+## API
+
+- `router.chat(prompt, *, system, model, max_tokens, temperature, tier, priority, call_type)`
+- `router.chat_messages(messages, *, model, max_tokens, temperature, tier, priority, call_type)`
+- `router.batch_submit(requests, backend, callback_url)`
+- `router.batch_status(job_id)`
+- `router.batch_results(job_id)`
+- `router.costs(period)`
+- `router.health()`

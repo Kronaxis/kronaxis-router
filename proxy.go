@@ -101,6 +101,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta.Stream = req.Stream
 	meta.ContentType = detectContentType(req.Messages)
 
+	// Auto-classify tier if caller didn't set it
+	if meta.Tier == 0 {
+		meta.Tier = ClassifyPrompt(&req)
+	}
+
 	// Check cache before doing anything expensive
 	cacheHit, cacheable := "", false
 	if cacheHit, cacheable = cacheKey(&req); cacheable {
@@ -265,6 +270,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		success := statusCode < 400
 		if success && cacheable {
 			respCache.Set(cacheHit, responseBody, statusCode, respHeaders)
+		}
+		// Quality validation: sample cheap-model responses
+		if success && qualVal.ShouldSample() {
+			content := ""
+			if len(chatResp.Choices) > 0 {
+				if s, ok := chatResp.Choices[0].Message.Content.(string); ok {
+					content = s
+				}
+			}
+			qualVal.ValidateAsync(meta, routeResult.Backend.Config.Name, content, modifiedBody, &reqCopy)
 		}
 		recordStat(meta, routeResult, latency, success)
 		logRequest(meta, routeResult, inputTokens, outputTokens, latency, success, "")
@@ -865,30 +880,30 @@ func detectContentType(messages []ChatMessage) string {
 }
 
 // estimateTokens returns token counts from the response usage object,
-// or estimates from text length (~4 chars per token).
+// or estimates using BPE-approximation heuristics.
 func estimateTokens(req *ChatRequest, resp *ChatResponse) (int, int) {
 	if resp != nil && resp.Usage != nil && resp.Usage.TotalTokens > 0 {
 		return resp.Usage.PromptTokens, resp.Usage.CompletionTokens
 	}
 
-	// Estimate from text length
-	inputLen := 0
+	// Estimate using BPE heuristic
+	inputText := ""
 	for _, msg := range req.Messages {
 		if s, ok := msg.Content.(string); ok {
-			inputLen += len(s)
+			inputText += s + " "
 		}
 	}
 
-	outputLen := 0
+	outputText := ""
 	if resp != nil {
 		for _, choice := range resp.Choices {
 			if s, ok := choice.Message.Content.(string); ok {
-				outputLen += len(s)
+				outputText += s
 			}
 		}
 	}
 
-	return inputLen / 4, outputLen / 4
+	return CountTokens(inputText), CountTokens(outputText)
 }
 
 func writeErrorJSON(w http.ResponseWriter, status int, message string) {
