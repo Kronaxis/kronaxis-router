@@ -369,6 +369,42 @@ Available metrics:
 - `kronaxis_router_backend_active_requests{backend,type}` -- in-flight count
 - `kronaxis_router_uptime_seconds`
 
+## Performance
+
+Benchmarked with a mock backend (instant responses) to isolate router overhead. All tests on a standard Linux server.
+
+### Throughput
+
+| Concurrent Connections | Requests/sec | Avg Latency |
+|----------------------|-------------|-------------|
+| 50 | 15,890 | 1.7ms |
+| 200 | 21,738 | 5.4ms |
+| 500 | 22,770 | 20ms |
+
+For comparison, a vLLM instance on an RTX 3090 serves 50-200 req/s depending on model size. The router will never be the bottleneck.
+
+### Latency Distribution (200 concurrent, 10K requests)
+
+| Percentile | Latency |
+|------------|---------|
+| P10 | 0.6ms |
+| P50 | 5.4ms |
+| P90 | 21ms |
+| P99 | 42ms |
+
+A real LLM call takes 500ms-30s. The router adds 2-5ms median. That is 0.01-1% of total request time.
+
+### Resource Usage
+
+| Metric | Value |
+|--------|-------|
+| Binary size | 9.9 MB |
+| Memory (idle) | 2.1 MB |
+| Memory (500 concurrent, 50K requests) | 2.1 MB |
+| CPU (idle) | 0% |
+
+2.1 MB RSS under full load. Go's runtime does not allocate for proxy traffic because request bodies are streamed, not buffered.
+
 ## Performance Tuning
 
 | Setting | Default | Guidance |

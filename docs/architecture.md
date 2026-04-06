@@ -83,3 +83,17 @@
 **Jaccard similarity for quality validation.** A simple word-overlap metric rather than embedding cosine similarity. This avoids needing to call an embedding model (which would add latency and cost to the validation loop). Accuracy is lower but sufficient for detecting gross quality degradation.
 
 **Apache 2.0 licence.** No restrictions on commercial use, modification, or redistribution. The config file (with your specific backends, rules, and API keys) stays private.
+
+## Performance
+
+Benchmarked against a mock backend (instant responses) to isolate pure router overhead.
+
+| Metric | Value |
+|--------|-------|
+| **Throughput** | 22,770 req/s at 500 concurrent |
+| **P50 latency** | 5.4ms (200 concurrent) |
+| **P99 latency** | 42ms (200 concurrent) |
+| **Binary size** | 9.9 MB |
+| **Memory** | 2.1 MB (constant under load) |
+
+A real LLM call takes 500ms-30s. The router adds 2-5ms. It will never be the bottleneck in any deployment where the backend is an actual LLM.
