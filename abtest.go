@@ -137,7 +137,7 @@ func (m *ABTestManager) Results() []ABTestResult {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var results []ABTestResult
+	results := make([]ABTestResult, 0)
 	for name, pair := range m.results {
 		results = append(results, ABTestResult{
 			Name:     name,
