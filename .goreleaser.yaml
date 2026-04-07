@@ -1,0 +1,123 @@
+# GoReleaser config for kronaxis-router
+# Run: goreleaser release --clean
+# Test: goreleaser build --snapshot --clean
+
+version: 2
+
+project_name: kronaxis-router
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kronaxis-router
+    main: .
+    binary: kronaxis-router
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - config.yaml
+      - examples/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: Kronaxis
+    name: kronaxis-router
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## Kronaxis Router v{{.Version}}
+
+    Intelligent LLM proxy with cost-optimised routing.
+
+    ### Installation
+
+    ```bash
+    # One-line install (Linux/macOS)
+    curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | sh
+
+    # Homebrew
+    brew install kronaxis/tap/kronaxis-router
+
+    # Go
+    go install github.com/kronaxis/kronaxis-router@v{{.Version}}
+    ```
+
+dockers:
+  - image_templates:
+      - "ghcr.io/kronaxis/kronaxis-router:{{ .Version }}"
+      - "ghcr.io/kronaxis/kronaxis-router:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+
+brews:
+  - name: kronaxis-router
+    repository:
+      owner: Kronaxis
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/Kronaxis/kronaxis-router"
+    description: "Intelligent LLM proxy with cost-optimised routing"
+    license: "Apache-2.0"
+    install: |
+      bin.install "kronaxis-router"
+    test: |
+      system "#{bin}/kronaxis-router", "version"
+    dependencies:
+      - name: go
+        type: optional
+
+nfpms:
+  - id: packages
+    package_name: kronaxis-router
+    vendor: Kronaxis
+    homepage: https://github.com/Kronaxis/kronaxis-router
+    maintainer: Jason Duke <jason@kronaxis.co.uk>
+    description: Intelligent LLM proxy with cost-optimised routing
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    contents:
+      - src: config.yaml
+        dst: /etc/kronaxis-router/config.yaml
+        type: config

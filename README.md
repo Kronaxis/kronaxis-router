@@ -26,26 +26,95 @@ A CFO can fill in accounts receivable, but a bookkeeper is 50x cheaper and does 
 - **API authentication** -- Bearer token auth on `/api/*` endpoints via `ROUTER_API_TOKEN` env var.
 - **OpenAI API compatible** -- Drop-in replacement. Services change one URL.
 
+## Install
+
+```bash
+# One-line install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | sh
+
+# Homebrew
+brew install kronaxis/tap/kronaxis-router
+
+# Go
+go install github.com/kronaxis/kronaxis-router@latest
+
+# Docker
+docker run -p 8050:8050 ghcr.io/kronaxis/kronaxis-router:latest
+```
+
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/kronaxis/kronaxis-router.git
-cd kronaxis-router
+# Auto-detect local models and API keys, generate config
+kronaxis-router init
 
-# Edit config.yaml with your backends
-vim config.yaml
+# Start the router
+kronaxis-router
 
-# Build and run
-go build -o kronaxis-router .
-./kronaxis-router
-
-# Or with Docker
-docker build -t kronaxis-router .
-docker run -p 8050:8050 -v $(pwd)/config.yaml:/app/config.yaml kronaxis-router
+# Dashboard at http://localhost:8050
 ```
 
+The `init` command probes for Ollama (localhost:11434), vLLM (localhost:8000), and cloud API keys in your environment (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`). It generates a `config.yaml` with backends, routing rules, budgets, and rate limits.
+
 Point your services at `http://localhost:8050/v1/chat/completions` instead of calling LLM backends directly.
+
+## Tool Integration
+
+```bash
+kronaxis-router init --aider      # Aider: sets OPENAI_API_BASE
+kronaxis-router init --continue    # Continue.dev: generates config.json snippet
+kronaxis-router init --cursor      # Cursor: generates MCP config
+kronaxis-router init --claude       # Claude Code: configures MCP server in ~/.claude/settings.json
+kronaxis-router init --openwebui   # Open WebUI: prints connection settings
+```
+
+## MCP Server (Claude Code, Cursor, Claude Desktop)
+
+The router includes a built-in [MCP](https://modelcontextprotocol.io) server that gives AI assistants tools to manage routing, costs, and backends conversationally.
+
+```bash
+# One-time setup for Claude Code
+kronaxis-router init --claude
+
+# Or manually add to ~/.claude/settings.json:
+{
+  "mcpServers": {
+    "kronaxis-router": {
+      "command": "kronaxis-router",
+      "args": ["mcp"],
+      "env": {
+        "ROUTER_URL": "http://localhost:8050"
+      }
+    }
+  }
+}
+```
+
+Available MCP tools:
+
+| Tool | Purpose |
+|------|---------|
+| `router_health` | Backend statuses, uptime, cache stats |
+| `router_backends` | List all backends with health and costs |
+| `router_costs` | Daily spending by service/model |
+| `router_stats` | Live request metrics |
+| `router_rules` | List routing rules |
+| `router_add_backend` | Register a new LLM endpoint |
+| `router_remove_backend` | Remove a backend |
+| `router_add_rule` | Create a routing rule |
+| `router_remove_rule` | Remove a rule |
+| `router_update_budget` | Set daily spending limits |
+| `router_config` | View full YAML config |
+| `router_reload` | Force config reload |
+
+### Build from source
+
+```bash
+git clone https://github.com/kronaxis/kronaxis-router.git
+cd kronaxis-router
+go build -o kronaxis-router .
+./kronaxis-router
+```
 
 ## Usage Examples
 

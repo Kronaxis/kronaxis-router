@@ -1,5 +1,9 @@
 kronaxis-router
+!kronaxis-router/
 *.exe
 *.test
 *.out
 .env
+dist/
+audit.jsonl
+*.log

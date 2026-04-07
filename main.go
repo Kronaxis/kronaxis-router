@@ -14,7 +14,12 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const version = "1.0.0"
+var (
+	// Set by goreleaser ldflags; defaults for dev builds
+	version = "1.1.0"
+	commit  = "dev"
+	date    = "unknown"
+)
 
 var (
 	db          *sql.DB
@@ -35,6 +40,27 @@ var (
 )
 
 func main() {
+	// Subcommand dispatch
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-v":
+			fmt.Printf("kronaxis-router v%s (%s, %s)\n", version, commit, date)
+			return
+		case "init":
+			runInit(os.Args[2:])
+			return
+		case "mcp":
+			runMCP(os.Args[2:])
+			return
+		case "serve":
+			// Explicit serve: strip the subcommand and fall through
+		}
+	}
+
+	runServer()
+}
+
+func runServer() {
 	logger.Printf("kronaxis-router v%s starting", version)
 
 	configPath := env("CONFIG_PATH", "config.yaml")
