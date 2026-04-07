@@ -80,16 +80,6 @@ release:
     go install github.com/kronaxis/kronaxis-router@v{{.Version}}
     ```
 
-dockers:
-  - image_templates:
-      - "ghcr.io/kronaxis/kronaxis-router:{{ .Version }}"
-      - "ghcr.io/kronaxis/kronaxis-router:latest"
-    dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/amd64"
-    extra_files:
-      - config.yaml
-
 brews:
   - name: kronaxis-router
     repository:
@@ -100,6 +90,7 @@ brews:
     homepage: "https://github.com/Kronaxis/kronaxis-router"
     description: "Intelligent LLM proxy with cost-optimised routing"
     license: "Apache-2.0"
+    skip_upload: auto
     install: |
       bin.install "kronaxis-router"
     test: |
