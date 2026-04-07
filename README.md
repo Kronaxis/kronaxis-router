@@ -512,6 +512,10 @@ The classifier is deliberately conservative: when uncertain, it routes to the mo
 
 **Gemini returns 403/429:** API key invalid or rate limited. The router passes 4xx errors through to the caller. Check your key and Gemini quota.
 
+## Further Reading
+
+- [Stop Paying Frontier Prices for Tasks a Local Model Handles Fine](https://kronaxis.co.uk/blog/llm-routing-cost-savings) -- full blog post with cost arithmetic, quality validation, and comparison to LiteLLM, OpenRouter, Portkey, and Martian
+
 ## Licence
 
 Apache 2.0. See [LICENSE](LICENSE).
