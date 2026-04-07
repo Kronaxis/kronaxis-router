@@ -1,0 +1,7 @@
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+WORKDIR /app
+COPY kronaxis-router /app/kronaxis-router
+COPY config.yaml /app/config.yaml
+EXPOSE 8050
+CMD ["/app/kronaxis-router"]
