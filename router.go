@@ -8,21 +8,23 @@ import (
 
 // RouteRequest contains the metadata extracted from an incoming request.
 type RouteRequest struct {
-	Service     string // X-Kronaxis-Service header
-	CallType    string // X-Kronaxis-CallType header
-	Priority    string // X-Kronaxis-Priority header (interactive, normal, background, bulk)
-	Tier        int    // X-Kronaxis-Tier header
-	PersonaID   string // X-Kronaxis-PersonaID header
-	ModelField  string // model field from OpenAI request body
-	ContentType string // "text" or "vision" (detected from message content)
-	Stream      bool   // stream field from OpenAI request body
+	Service         string          // X-Kronaxis-Service header
+	CallType        string          // X-Kronaxis-CallType header
+	Priority        string          // X-Kronaxis-Priority header (interactive, normal, background, bulk)
+	Tier            int             // X-Kronaxis-Tier header (0=auto, 1=heavy, 2=light)
+	PersonaID       string          // X-Kronaxis-PersonaID header
+	ModelField      string          // model field from OpenAI request body
+	ContentType     string          // "text" or "vision" (detected from message content)
+	Stream          bool            // stream field from OpenAI request body
+	ComplexityScore ComplexityScore // 0-100 auto-classified complexity
 }
 
 // RouteResult is the outcome of routing: which backend to use and why.
 type RouteResult struct {
-	Backend   *Backend
-	Rule      *RoutingRule // nil if default fallback was used
-	ModelName string       // the model name to use in the forwarded request
+	Backend    *Backend
+	Rule       *RoutingRule    // nil if default fallback was used
+	ModelName  string          // the model name to use in the forwarded request
+	Complexity ComplexityScore // 0-100 complexity score for this request
 }
 
 // Router evaluates routing rules and selects backends.
@@ -96,8 +98,9 @@ func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 	var results []RouteResult
 	for _, backend := range healthy {
 		results = append(results, RouteResult{
-			Backend:   backend,
-			ModelName: resolveModelName(req.ModelField, backend, loraAdapter),
+			Backend:    backend,
+			ModelName:  resolveModelName(req.ModelField, backend, loraAdapter),
+			Complexity: req.ComplexityScore,
 		})
 	}
 	return results
@@ -121,9 +124,10 @@ func (r *Router) resolveAllBackends(rule *RoutingRule, req RouteRequest, loraAda
 	var results []RouteResult
 	for _, backend := range healthy {
 		results = append(results, RouteResult{
-			Backend:   backend,
-			Rule:      rule,
-			ModelName: resolveModelName(req.ModelField, backend, loraAdapter),
+			Backend:    backend,
+			Rule:       rule,
+			ModelName:  resolveModelName(req.ModelField, backend, loraAdapter),
+			Complexity: req.ComplexityScore,
 		})
 	}
 	return results

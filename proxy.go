@@ -101,7 +101,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta.Stream = req.Stream
 	meta.ContentType = detectContentType(req.Messages)
 
-	// Auto-classify tier if caller didn't set it
+	// Score complexity and auto-classify tier if caller didn't set it
+	meta.ComplexityScore = classifier.ScoreComplexity(&req)
 	if meta.Tier == 0 {
 		meta.Tier = ClassifyPrompt(&req)
 	}
@@ -861,6 +862,7 @@ func addBrandingHeaders(w http.ResponseWriter, route RouteResult) {
 		if route.Rule != nil {
 			w.Header().Set("X-Kronaxis-Rule", route.Rule.Name)
 		}
+		w.Header().Set("X-Kronaxis-Complexity", fmt.Sprintf("%.0f", float64(route.Complexity)))
 	}
 }
 

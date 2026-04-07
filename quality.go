@@ -161,6 +161,11 @@ func (qv *QualityValidator) ValidateAsync(
 			}
 		}
 		qv.mu.Unlock()
+
+		// ── Feedback loop: adjust classifier weights ───────────────
+		// Extract keywords from the prompt and adjust their weights
+		// based on whether the cheap model produced good output.
+		qv.feedbackToClassifier(req, similarity)
 	}()
 }
 
@@ -187,6 +192,51 @@ func (qv *QualityValidator) Stats() map[string]interface{} {
 		"scores":     scores,
 		"promotions": promotions,
 	}
+}
+
+// feedbackToClassifier adjusts classifier keyword weights based on quality results.
+// If the cheap model scored well, light keywords in this prompt get strengthened
+// (more aggressive routing to cheap model next time). If it scored poorly,
+// light keywords get weakened (routes to expensive model next time).
+func (qv *QualityValidator) feedbackToClassifier(req *ChatRequest, similarity float64) {
+	// Extract all text from the prompt
+	var allText string
+	for _, msg := range req.Messages {
+		if s, ok := msg.Content.(string); ok {
+			allText += s + " "
+		}
+	}
+	lower := strings.ToLower(allText)
+
+	// Determine adjustment direction and magnitude
+	// Good quality (>= threshold): nudge keywords toward cheap routing (+0.1)
+	// Poor quality (< threshold): nudge keywords toward expensive routing (-0.2)
+	// Asymmetric: penalise quality failures more than rewarding successes
+	var adjustment float64
+	if similarity >= qv.config.Threshold {
+		adjustment = 0.1 // Cheap model worked: slightly strengthen cheap routing
+	} else {
+		adjustment = -0.2 // Cheap model failed: more strongly weaken cheap routing
+	}
+
+	classifier.mu.RLock()
+	// Check which light keywords appear in this prompt
+	for _, kw := range classifier.lightKeywords {
+		if strings.Contains(lower, kw.Keyword) {
+			classifier.mu.RUnlock()
+			classifier.ApplyFeedback(kw.Keyword, adjustment)
+			classifier.mu.RLock()
+		}
+	}
+	// Check which heavy keywords appear
+	for _, kw := range classifier.heavyKeywords {
+		if strings.Contains(lower, kw.Keyword) {
+			classifier.mu.RUnlock()
+			classifier.ApplyFeedback(kw.Keyword, -adjustment) // Inverse for heavy keywords
+			classifier.mu.RLock()
+		}
+	}
+	classifier.mu.RUnlock()
 }
 
 // computeSimilarity calculates a simple similarity score between two texts.

@@ -117,6 +117,7 @@ func main() {
 	mux.HandleFunc("/api/batch/results", handleBatchResults)
 	mux.HandleFunc("/api/batch/stream", handleBatchStream)
 	mux.HandleFunc("/metrics", handleMetrics)
+	mux.HandleFunc("/api/classifier", handleClassifierStats)
 	mux.HandleFunc("/api/abtests", handleABTests)
 	registerUI(mux)
 
@@ -206,6 +207,22 @@ func runMigrations() {
 			logger.Printf("migration warning: %v", err)
 		}
 	}
+}
+
+func handleClassifierStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"thresholds": map[string]float64{
+			"tier2_ceiling": Tier2Ceiling,
+			"tier1_floor":   Tier1Floor,
+		},
+		"feedback_adjustments": classifier.FeedbackState(),
+		"heavy_keywords":       len(classifier.heavyKeywords),
+		"light_keywords":       len(classifier.lightKeywords),
+	})
 }
 
 func generateDefaultConfig(path string) {
