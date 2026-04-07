@@ -450,7 +450,7 @@ Benchmarked with a mock backend (instant responses) to isolate router overhead. 
 | 200 | 21,738 | 5.4ms |
 | 500 | 22,770 | 20ms |
 
-For comparison, a vLLM instance on an RTX 3090 serves 50-200 req/s depending on model size. The router will never be the bottleneck.
+For comparison, a typical vLLM instance serves 50-200 req/s depending on model size and GPU. The router will never be the bottleneck.
 
 ### Latency Distribution (200 concurrent, 10K requests)
 

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: kronaxis-router
+description: Intelligent LLM proxy with cost-optimised routing
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/kronaxis/kronaxis-router
+sources:
+  - https://github.com/kronaxis/kronaxis-router
+maintainers:
+  - name: Kronaxis
+    email: dev@kronaxis.co.uk
+keywords:
+  - llm
+  - proxy
+  - routing
+  - cost-optimization
+  - vllm
+  - openai

@@ -69,8 +69,8 @@ func newAdaptiveClassifier() *AdaptiveClassifier {
 			{"sentiment", 5}, {"positive or negative", 5},
 			{"translate", 4}, {"convert", 3},
 			{"fill in", 4}, {"complete the", 3}, {"answer:", 3},
-			{"standard_panel", 5}, {"conjoint_rating", 5}, {"emotional_state", 4},
-			{"issp_questionnaire", 5}, {"probe_response", 4}, {"derive_beliefs", 4},
+			{"form_field", 4}, {"lookup_value", 4}, {"match_record", 4},
+			{"validate_input", 4}, {"check_status", 4}, {"format_output", 4},
 		},
 		feedback: make(map[string]float64),
 	}

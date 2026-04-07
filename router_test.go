@@ -13,13 +13,13 @@ func TestMatchRule_EmptyMatch(t *testing.T) {
 }
 
 func TestMatchRule_ServiceMatch(t *testing.T) {
-	rule := &RoutingRule{Name: "svc", Match: RuleMatch{Service: "animus"}}
+	rule := &RoutingRule{Name: "svc", Match: RuleMatch{Service: "service-a"}}
 
-	if !matchRule(rule, RouteRequest{Service: "animus"}) {
-		t.Error("should match animus")
+	if !matchRule(rule, RouteRequest{Service: "service-a"}) {
+		t.Error("should match service-a")
 	}
-	if matchRule(rule, RouteRequest{Service: "vanguard"}) {
-		t.Error("should not match vanguard")
+	if matchRule(rule, RouteRequest{Service: "service-b"}) {
+		t.Error("should not match service-b")
 	}
 }
 
@@ -40,16 +40,16 @@ func TestMatchRule_TierMatch(t *testing.T) {
 func TestMatchRule_MultipleFields(t *testing.T) {
 	rule := &RoutingRule{
 		Name:  "specific",
-		Match: RuleMatch{Service: "animus", Tier: 2, Priority: "background"},
+		Match: RuleMatch{Service: "service-a", Tier: 2, Priority: "background"},
 	}
 
-	if !matchRule(rule, RouteRequest{Service: "animus", Tier: 2, Priority: "background"}) {
+	if !matchRule(rule, RouteRequest{Service: "service-a", Tier: 2, Priority: "background"}) {
 		t.Error("should match all fields")
 	}
-	if matchRule(rule, RouteRequest{Service: "animus", Tier: 2, Priority: "interactive"}) {
+	if matchRule(rule, RouteRequest{Service: "service-a", Tier: 2, Priority: "interactive"}) {
 		t.Error("should not match wrong priority")
 	}
-	if matchRule(rule, RouteRequest{Service: "animus", Tier: 1, Priority: "background"}) {
+	if matchRule(rule, RouteRequest{Service: "service-a", Tier: 1, Priority: "background"}) {
 		t.Error("should not match wrong tier")
 	}
 }
@@ -66,8 +66,8 @@ func TestMatchRule_ContentType(t *testing.T) {
 }
 
 func TestMatchRule_CaseInsensitive(t *testing.T) {
-	rule := &RoutingRule{Name: "svc", Match: RuleMatch{Service: "Animus"}}
-	if !matchRule(rule, RouteRequest{Service: "animus"}) {
+	rule := &RoutingRule{Name: "svc", Match: RuleMatch{Service: "Service-A"}}
+	if !matchRule(rule, RouteRequest{Service: "service-a"}) {
 		t.Error("should match case-insensitively")
 	}
 }

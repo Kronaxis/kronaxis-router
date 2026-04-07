@@ -1,0 +1,11 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kronaxis-router.fullname" . }}-config
+  labels:
+    {{- include "kronaxis-router.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- .Values.config.inline | default "server:\n  port: 8050\nbackends: []\nrules: []\ndefaults:\n  fallback_chain: []\n" | nindent 4 }}
+{{- end }}

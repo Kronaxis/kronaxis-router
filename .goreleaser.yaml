@@ -104,7 +104,7 @@ nfpms:
     package_name: kronaxis-router
     vendor: Kronaxis
     homepage: https://github.com/Kronaxis/kronaxis-router
-    maintainer: Jason Duke <jason@kronaxis.co.uk>
+    maintainer: Kronaxis <dev@kronaxis.co.uk>
     description: Intelligent LLM proxy with cost-optimised routing
     license: Apache-2.0
     formats:
