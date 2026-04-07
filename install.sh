@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Kronaxis Router installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | bash
 set -e
 
 REPO="Kronaxis/kronaxis-router"
