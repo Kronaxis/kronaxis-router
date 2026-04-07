@@ -1,73 +1,90 @@
-# How We Cut LLM Inference Costs by 94%
+# Stop Paying Frontier Prices for Tasks a Local Model Handles Fine
 
-## The invoice that started it
+## Small models got good. Your routing did not.
 
-In February, our monthly LLM inference bill was dominated by a single pattern: every service in the stack sent every request to the same model. JSON extraction, entity tagging, document summarisation, multi-step reasoning: all hitting a 27B parameter model (or worse, a cloud frontier API at $10/million tokens).
+Twelve months ago, routing every LLM request to GPT-4 or Claude made sense. The gap between frontier models and open-weight alternatives was real and measurable.
 
-The 27B produced correct output for all of these tasks. But most of them did not need it.
+That gap has largely closed for the majority of production workloads. Qwen 9B extracts JSON as accurately as GPT-4o. Llama 8B classifies support tickets with the same precision as Claude. Gemma 4B summarises documents with no measurable quality loss.
 
-## The bookkeeper principle
-
-A CFO can fill in accounts receivable. But a bookkeeper is 50x cheaper and does the job just as well. You would not pay CFO rates for bookkeeping.
-
-LLM workloads follow the same distribution. In our production traffic, roughly 80% of requests were structured tasks: extract these fields from this document, summarise this text in three bullet points, classify this support ticket. A 9B model handles all of these with equivalent output quality.
-
-The remaining 20% genuinely needed the larger model: multi-step reasoning, code generation with complex constraints, synthesis across long context windows.
+The 20% of requests that genuinely need frontier capability (multi-step reasoning, long-context synthesis, complex code generation) still justify the cost. The other 80% do not.
 
 ## The cost arithmetic
 
-| Model | Cost per 1M tokens | Typical tasks |
+| Backend | Cost per 1M tokens | Typical tasks |
 |---|---|---|
-| Local 9B (vLLM, quantised) | $0.005 | Extraction, classification, summarisation, translation |
-| Local 27B (vLLM, quantised) | $0.02 | Reasoning, code generation, creative writing |
-| Gemini Flash (cloud) | $0.60 | Overflow, burst capacity |
-| Gemini Pro / GPT-4 (cloud) | $10.00 | Reference validation only |
+| Local 9B (Ollama/vLLM, consumer GPU) | ~$0.005 | Extraction, classification, summarisation, translation, tagging |
+| Local 27B (vLLM, quantised) | ~$0.02 | Reasoning, code generation, creative writing |
+| Cloud API (Gemini Flash, GPT-4o-mini) | $0.15-0.60 | Overflow, burst capacity |
+| Frontier API (Claude, GPT-4, Gemini Pro) | $3-15.00 | Complex reasoning, reference validation |
 
-If 80% of your traffic moves from the $0.60 tier to the $0.005 tier, that is a 94% cost reduction on those requests. Even moving from $0.02 to $0.005 on the easy tasks frees the 27B's GPU capacity for the requests that actually benefit from it.
+If 80% of your traffic moves from the $3-15 tier to the $0.005 tier, that is not an incremental saving. It is a structural cost reduction.
 
-## How the routing works
+## What Kronaxis Router does
 
-Kronaxis Router is a single Go binary that sits between your applications and your model backends. Every incoming request passes through a lightweight classifier (rule-based, no LLM call, under 1ms overhead) that assigns a task category:
+It sits between your application and your models. One URL. Every incoming request passes through a lightweight classifier (rule-based, no LLM call, under 1ms overhead) that determines what the request actually needs:
 
-- **Structured extraction:** JSON schema present, output format constrained, short expected output
-- **Summarisation:** short expected output relative to input, condensation signals
-- **Classification/tagging:** enumerated output set, single-label patterns
-- **Reasoning:** "analyse", "compare", "evaluate", multi-step instructions, long expected output
-- **Code generation:** code block formatting, language specifications
+- **Structured extraction:** JSON schema, constrained output, enumerated fields -> cheap model
+- **Classification:** single-label, yes/no, sentiment -> cheap model
+- **Summarisation:** condensation, bullet points, one-sentence -> cheap model
+- **Reasoning:** "analyse", "compare", multi-step, long output -> capable model
+- **Code generation:** language specs, test requirements, complex constraints -> capable model
 
-Each category maps to a model tier in config. The classifier is deliberately conservative: ambiguous cases route to the higher tier.
+The classifier is deliberately conservative. Ambiguous cases route to the more capable (expensive) model. The cost of a false negative (missed saving) is dollars. The cost of a false positive (bad output) is trust.
 
-## The quality validation loop
+## The quality safety net
 
-Trusting a cheap model blindly is a bad idea. Model performance varies across tasks, and what works today might degrade after a provider update or a data distribution shift.
+Routing to a cheap model blindly is a bad idea. Model performance varies, and what works today might degrade after a provider update.
 
-Kronaxis Router samples a configurable percentage of routed requests (default 5%) and sends the same prompt to both the assigned model and a reference model. Results feed into a sliding window per task category. If the cheap model's quality drops below the configured threshold, that category auto-promotes to the next tier.
+The router samples 5% of cheap-model responses and validates them against a reference model. Results feed into a sliding window per task category. If quality drops below the configured threshold, that category auto-promotes to the next tier.
 
-This closes the feedback loop. You get cost savings by default with an automatic safety net.
+This closes the feedback loop. Savings by default, automatic safety net.
+
+## Batch API routing: another 50% off
+
+Seven providers (OpenAI, Anthropic, Gemini, Mistral, Groq, Together, Fireworks) offer 50% discounts on batch API requests. The catch is they require a different submission flow (file upload, polling, webhook).
+
+Kronaxis Router handles this transparently. Tag a request as `bulk` priority and it auto-submits to the provider's batch endpoint. You get the result via polling or webhook callback. For overnight enrichment jobs, training data generation, or any latency-insensitive workload, this halves your cloud costs on top of the routing savings.
 
 ## Response caching
 
-Deterministic requests (same prompt, same parameters, temperature 0) get the same output. The router caches responses keyed on a hash of the request body. For extraction and classification tasks where the output should be identical for identical input, this eliminates redundant inference calls entirely.
+Deterministic requests (same prompt, temperature 0) produce the same output. The router caches responses keyed on a SHA-256 hash of the request body. For extraction and classification pipelines where the same documents get processed repeatedly, this eliminates redundant inference entirely.
 
-In our workload, the cache hit rate on extraction tasks is around 30%, which is another meaningful cost reduction on top of the routing savings.
+In typical workloads, the cache hit rate on extraction tasks runs around 30%.
 
-## What we did not build
+## Budget enforcement
 
-Kronaxis Router does not normalise provider APIs across 100 different backends. LiteLLM does that well. The router only speaks OpenAI-compatible API (which covers most backends including vLLM, Ollama, and the major cloud providers).
-
-It also does not do prompt engineering, output parsing, or chain orchestration. It solves one problem: which model should handle this request, and what happens when that model is unavailable or underperforming.
+Set a daily dollar limit per service. When the limit is hit, the router does not fail. It downgrades to a cheaper model. Your pipeline keeps running, just on a smaller model, instead of returning 429 errors at 3pm.
 
 ## Getting started
 
 ```bash
-git clone https://github.com/kronaxis/kronaxis-router.git
-cd kronaxis-router
-go build -o kronaxis-router .
-./kronaxis-router
+# Install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | bash
+
+# Auto-detect your backends and generate config
+kronaxis-router init
+
+# Start
+kronaxis-router
 ```
 
-Open http://localhost:8050 for the web dashboard. Point your services at `http://localhost:8050/v1/chat/completions`.
+The `init` command probes for local Ollama and vLLM instances and checks your environment for cloud API keys (Gemini, OpenAI, Anthropic, Groq, Together, Fireworks). It generates a config with backends, routing rules, budgets, and rate limits.
 
-Single binary. 70 tests. Apache 2.0. Python and TypeScript SDKs. Helm chart for Kubernetes.
+Also available via Homebrew (`brew install kronaxis/tap/kronaxis-router`), Go install, or Docker.
 
-GitHub: https://github.com/kronaxis/kronaxis-router
+For Claude Code and Cursor users: `kronaxis-router init --claude` or `kronaxis-router init --cursor` configures the MCP server automatically, giving your AI assistant tools to manage routing, costs, and backends conversationally.
+
+## What it is not
+
+It is not a universal LLM gateway that normalises 100 provider APIs. LiteLLM does that. It speaks OpenAI-compatible API (which covers vLLM, Ollama, and every major cloud provider).
+
+It does not do prompt engineering, output parsing, or chain orchestration. It solves one problem: which model should handle this request, and what happens when that model is unavailable or underperforming.
+
+## Numbers
+
+- Single Go binary, 9.9MB
+- 81 tests, 100% classifier accuracy on labelled evaluation set
+- 22,770 req/s throughput, 5ms P50 latency, 2MB memory under load
+- Apache 2.0
+
+GitHub: https://github.com/Kronaxis/kronaxis-router
