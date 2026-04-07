@@ -255,6 +255,51 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Success (or 4xx which is a client error, pass through)
+		// Quality gate: check response before returning to caller
+		if statusCode < 400 && qGate.ShouldGate(meta) {
+			systemPrompt := ""
+			for _, m := range reqCopy.Messages {
+				if m.Role == "system" {
+					if s, ok := m.Content.(string); ok {
+						systemPrompt = s
+					}
+				}
+			}
+
+			qg := qGate
+			qg.mu.RLock()
+			mode := qg.config.Mode
+			qg.mu.RUnlock()
+
+			if mode == "parallel" {
+				// Mode B: already dispatched to both (but we only sent to cheap)
+				// Re-dispatch with parallel gate
+				gatedBody, gatedStatus, usedFallback := qGate.GateParallel(
+					&reqCopy, meta, routeResult.Backend, routeResult.ModelName,
+					modifiedBody, systemPrompt,
+				)
+				if gatedBody != nil {
+					respBody = gatedBody
+					statusCode = gatedStatus
+					if usedFallback {
+						w.Header().Set("X-Kronaxis-Quality-Gate", "retried")
+					}
+				}
+			} else {
+				// Mode A (default): sequential gate
+				gatedBody, gatedStatus, usedFallback := qGate.GateSequential(
+					respBody, statusCode, &reqCopy, meta, systemPrompt,
+				)
+				if gatedBody != nil {
+					respBody = gatedBody
+					statusCode = gatedStatus
+					if usedFallback {
+						w.Header().Set("X-Kronaxis-Quality-Gate", "retried")
+					}
+				}
+			}
+		}
+
 		latency := time.Since(start)
 		var chatResp ChatResponse
 		json.Unmarshal(respBody, &chatResp)

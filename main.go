@@ -29,6 +29,7 @@ var (
 	qualVal     *QualityValidator
 	auditLog    *AuditLogger
 	abTests     *ABTestManager
+	qGate       *QualityGate
 	logger      = log.New(os.Stdout, "[router] ", log.LstdFlags|log.Lmsgprefix)
 	startupTime = time.Now()
 )
@@ -92,6 +93,18 @@ func main() {
 		MaxEntries: envInt("AUDIT_MAX_ENTRIES", 100000),
 	})
 	abTests = newABTestManager(nil)
+	qGate = newQualityGate(QualityGateConfig{
+		Enabled:         env("QUALITY_GATE_ENABLED", "") == "true",
+		Mode:            env("QUALITY_GATE_MODE", "sequential"),
+		SampleRate:      1.0, // Gate all requests when enabled
+		FallbackBackend: env("QUALITY_GATE_FALLBACK", ""),
+		Checks: GateChecks{
+			MinLength:    1,
+			MaxEmptyRate: 0,
+			ValidJSON:    true,
+			NoRefusal:    true,
+		},
+	})
 
 	// Start background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
@@ -177,6 +190,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"backends":         backends,
 		"cache":            respCache.Stats(),
 		"quality":          qualVal.Stats(),
+		"quality_gate":     qGate.Stats(),
 	})
 }
 

@@ -56,6 +56,7 @@ func setupTestRouter(backends []BackendConfig, rules []RoutingRule) {
 	qualVal = newQualityValidator(QualityConfig{})
 	auditLog = newAuditLogger(AuditConfig{})
 	abTests = newABTestManager(nil)
+	qGate = newQualityGate(QualityGateConfig{})
 	cfg = &Config{
 		Server: ServerConfig{
 			Branding: BrandingConfig{Headers: true, HeaderName: "Test Router"},
