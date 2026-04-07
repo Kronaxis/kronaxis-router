@@ -39,6 +39,20 @@ kronaxis-router         # start
 
 One command detects your local models and API keys, generates a config, and you are routing. Supports Ollama, vLLM, OpenAI, Gemini. OpenAI-compatible API so existing code just changes one URL.
 
+**How this compares to alternatives:**
+
+I looked at everything before building this. Here is where each option sits:
+
+**LiteLLM** (Python, open source) -- the closest alternative. Supports 100+ providers, virtual API keys, spend tracking UI. If you need broad provider coverage and are already running Python infrastructure, LiteLLM is mature and well-maintained. Where it falls short: it is a Python process (300MB+ memory, ~2K req/s vs our 22K), it does not do intelligent cost-based routing (you pick the model per request, it does not classify and route for you), no quality validation loop, no batch API aggregation across providers, no response caching, no LoRA-aware routing. LiteLLM is a universal gateway. Kronaxis Router is a cost optimiser.
+
+**OpenRouter** (SaaS) -- zero setup, huge model catalogue. But they add a margin on every request (typically 5-20% on top of provider pricing), your data goes through their servers, and you cannot route to local models. If cost reduction is the goal, adding a middleman margin is the opposite direction.
+
+**Portkey** (SaaS) -- strong on observability, guardrails, prompt management. Good if you need those features. Not focused on cost-based routing. Paid plans start at $99/month. Your data goes through their infrastructure.
+
+**Martian / Not Diamond** (ML-based routing) -- these use trained classifiers to pick models per request. More sophisticated routing than rule-based. But both are SaaS with usage-based pricing, closed source, and add latency for the ML classification step. Our classifier runs in under 1ms with zero network calls.
+
+**The honest summary:** if you need 100+ provider support and do not care about intelligent routing, use LiteLLM. If you want zero setup and do not care about cost, use OpenRouter. If you want to minimise LLM spend with automatic quality validation, self-host on your own infrastructure, and run at 22K req/s on 2MB of RAM, this is built for that.
+
 Single binary. 81 tests. 2MB memory under load. Apache 2.0.
 
 GitHub: https://github.com/Kronaxis/kronaxis-router

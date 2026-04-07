@@ -80,6 +80,85 @@ It is not a universal LLM gateway that normalises 100 provider APIs. LiteLLM doe
 
 It does not do prompt engineering, output parsing, or chain orchestration. It solves one problem: which model should handle this request, and what happens when that model is unavailable or underperforming.
 
+## How this compares to alternatives
+
+We built this because nothing else solved the actual problem. Here is an honest comparison.
+
+### vs LiteLLM
+
+LiteLLM is the most established open-source LLM gateway. It supports 100+ providers, has virtual API keys, team-based spend tracking, and a web UI for management. If you need to unify a dozen different provider APIs behind one endpoint, LiteLLM does that well.
+
+Where it does not compete:
+
+| Capability | LiteLLM | Kronaxis Router |
+|---|---|---|
+| **Intelligent routing** | Manual: you pick the model per request | Automatic: classifier assigns tier, routes to cheapest capable backend |
+| **Quality validation** | None | 5% sampling against reference model, auto-promote on degradation |
+| **Batch API aggregation** | None | Transparent 50% off across 7 providers |
+| **Response caching** | None | SHA-256 keyed, deterministic requests |
+| **LoRA adapter routing** | None | Routes to the vLLM instance with the right adapter loaded |
+| **Budget enforcement** | Spend tracking (alerts) | Active enforcement: downgrade to cheaper model on limit hit |
+| **Runtime** | Python (300MB+ memory, ~2K req/s) | Go (2MB memory, 22K req/s) |
+| **Deployment** | pip install + Python runtime | Single binary, zero dependencies |
+| **Provider count** | 100+ | 4 types (vLLM, Ollama, OpenAI-compat, Gemini), which covers most backends |
+
+LiteLLM is a universal gateway. Kronaxis Router is a cost optimiser. Different tools for different problems. If you need broad provider coverage and already run Python infrastructure, LiteLLM is a good choice. If you want to minimise LLM spend with automatic quality assurance, this is purpose-built for that.
+
+### vs OpenRouter
+
+OpenRouter is a SaaS proxy with a large model catalogue and zero setup. You get one API with access to hundreds of models from dozens of providers.
+
+The trade-off is cost. OpenRouter adds a margin on top of provider pricing (typically 5-20%). If you are routing to reduce costs, adding a middleman margin goes in the wrong direction. Your data also passes through their infrastructure, which may not work for regulated or sensitive workloads.
+
+OpenRouter does not support local models, has no quality validation, no budget enforcement, and no batch API routing.
+
+| | OpenRouter | Kronaxis Router |
+|---|---|---|
+| **Setup** | Zero (SaaS) | One binary + config |
+| **Cost** | Provider price + margin | Provider price only (self-hosted) |
+| **Local models** | No | Yes (Ollama, vLLM) |
+| **Data residency** | Their servers | Your infrastructure |
+| **Intelligent routing** | Some (fallback) | Full cost-based classification |
+| **Quality validation** | No | Yes |
+| **Batch API** | No | Yes (50% off) |
+
+### vs Portkey
+
+Portkey is strong on observability: request logging, prompt management, guardrails, A/B testing. If you need a full LLM ops platform, Portkey covers more surface area.
+
+It is a SaaS product with paid plans starting at $99/month. It does not do cost-based routing (you pick the model), does not support local models, and does not aggregate batch APIs. For teams whose primary problem is visibility and governance rather than cost, Portkey is a reasonable choice.
+
+### vs Martian / Not Diamond
+
+Both use ML-trained classifiers to pick the best model per request. This is more sophisticated than rule-based classification: they learn from outcomes rather than relying on keyword heuristics.
+
+The trade-offs: both are SaaS (closed source, usage-based pricing, data leaves your infrastructure), the ML classification adds network latency per request, and neither supports local models or batch API routing.
+
+Our classifier is deliberately simple (rule-based, under 1ms, zero network calls) with a quality validation feedback loop that catches regressions. Less sophisticated, but cheaper, faster, and self-hosted.
+
+### Summary table
+
+| Feature | Kronaxis Router | LiteLLM | OpenRouter | Portkey | Martian |
+|---|---|---|---|---|---|
+| Self-hosted | Yes | Yes | No | No | No |
+| Open source | Apache 2.0 | MIT | No | No | No |
+| Cost-based routing | Automatic | Manual | Some | Manual | ML-based |
+| Quality validation | Yes (closed loop) | No | No | No | Implicit |
+| Batch API (50% off) | 7 providers | No | No | No | No |
+| Response caching | Yes | No | No | No | No |
+| Budget enforcement | Downgrade on limit | Alerts only | No | Alerts | No |
+| LoRA routing | Yes | No | No | No | No |
+| Local model support | Ollama + vLLM | vLLM | No | No | No |
+| Memory usage | 2MB | 300MB+ | N/A (SaaS) | N/A | N/A |
+| Throughput | 22K req/s | ~2K req/s | N/A | N/A | N/A |
+| Provider count | 4 types | 100+ | 200+ | 15+ | 100+ |
+| MCP integration | Built in | No | No | No | No |
+| Price | Free | Free / $150+/mo hosted | Margin per request | $99+/mo | Usage-based |
+
+We win on cost savings, performance, and self-hosted simplicity. LiteLLM wins on provider breadth. OpenRouter wins on zero setup. Portkey wins on observability. Martian wins on routing sophistication.
+
+For teams whose primary goal is spending less on LLM inference without sacrificing output quality, this is the tool.
+
 ## Numbers
 
 - Single Go binary, 9.9MB
