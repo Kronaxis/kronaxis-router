@@ -64,6 +64,13 @@ func runServer() {
 	logger.Printf("kronaxis-router v%s starting", version)
 
 	configPath := env("CONFIG_PATH", "config.yaml")
+	// Support -config / --config flag (overrides env var)
+	for i, arg := range os.Args[1:] {
+		if (arg == "-config" || arg == "--config") && i+1 < len(os.Args[1:]) {
+			configPath = os.Args[i+2]
+			break
+		}
+	}
 	port := env("ROUTER_PORT", "8050")
 	databaseURL := env("DATABASE_URL", "")
 
