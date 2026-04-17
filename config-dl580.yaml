@@ -1,0 +1,65 @@
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 120s
+
+backends:
+  # GPU 0 - Qwen3.5-9B AWQ for text/planning (goal generation, research)
+  - name: gpu0-text
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "imprint-9b-awq"
+    max_concurrent: 32
+    health_endpoint: "/v1/models"
+
+  # GPU 1 - Qwen2.5-VL-7B for VQA (image-based UI understanding)
+  - name: gpu1-vlm
+    url: "http://localhost:8001"
+    type: vllm
+    model_name: "Qwen/Qwen2-VL-2B-Instruct"
+    max_concurrent: 32
+    health_endpoint: "/v1/models"
+
+  # Ollama debiased - only for election/survey prediction work.
+  - name: ollama-debiased
+    url: "http://localhost:11434"
+    type: ollama
+    model_name: "debiased:q4"
+    max_concurrent: 2
+    health_endpoint: "/api/tags"
+
+rules:
+  # Election/survey prediction - explicit model=debiased match.
+  - name: election
+    priority: 200
+    match:
+      model: "debiased"
+    backends:
+      - ollama-debiased
+
+  # Planning/goal-gen - text-heavy prompts that need a proper text model.
+  - name: planning
+    priority: 150
+    match:
+      call_type: "planning"
+    backends:
+      - gpu0-text
+
+  # VLM/VQA - image+text queries from atlas BFS.
+  - name: vlm
+    priority: 120
+    match:
+      call_type: "vlm"
+    backends:
+      - gpu1-vlm
+
+  # Catch-all: route anything unspecified to the VLM backend (default for atlas).
+  - name: default
+    priority: 100
+    match: {}
+    backends:
+      - gpu1-vlm
+      - gpu0-text
+
+defaults:
+  default_timeout_ms: 120000
