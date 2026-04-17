@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // RouteRequest contains the metadata extracted from an incoming request.
@@ -33,6 +35,7 @@ type Router struct {
 	defaults DefaultsConfig
 	pool     *BackendPool
 	mu       sync.RWMutex
+	rrCount  atomic.Uint64 // round-robin counter for load balancing
 }
 
 func newRouter(rules []RoutingRule, defaults DefaultsConfig, pool *BackendPool) *Router {
@@ -51,17 +54,36 @@ func (r *Router) updateRules(rules []RoutingRule, defaults DefaultsConfig) {
 }
 
 // Route selects the best backend for a given request.
-// Returns the primary result plus an ordered list of fallback candidates.
+// Uses least-connections with round-robin tiebreaker: when multiple backends
+// have equal active request counts, rotates between them.
 func (r *Router) Route(req RouteRequest) (RouteResult, error) {
 	candidates := r.RouteCandidates(req)
 	if len(candidates) == 0 {
 		return RouteResult{}, fmt.Errorf("no healthy backend available")
 	}
+	if len(candidates) > 1 {
+		sort.Slice(candidates, func(i, j int) bool {
+			ai := candidates[i].Backend.ActiveReqs.Load()
+			aj := candidates[j].Backend.ActiveReqs.Load()
+			return ai < aj
+		})
+		// Round-robin tiebreaker: when least-busy candidates are tied,
+		// rotate which one is picked to distribute load evenly.
+		minLoad := candidates[0].Backend.ActiveReqs.Load()
+		tied := 1
+		for tied < len(candidates) && candidates[tied].Backend.ActiveReqs.Load() == minLoad {
+			tied++
+		}
+		if tied > 1 {
+			pick := int(r.rrCount.Add(1)-1) % tied
+			candidates[0], candidates[pick] = candidates[pick], candidates[0]
+		}
+	}
 	return candidates[0], nil
 }
 
-// RouteCandidates returns all viable backends for a request, in priority order.
-// The caller should try each one until one succeeds (failover).
+// RouteCandidates returns all viable backends for a request.
+// Sorted by least-connections with round-robin tiebreaker for even load distribution.
 func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 	r.mu.RLock()
 	rules := r.rules
@@ -81,7 +103,7 @@ func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 		if len(candidates) == 0 {
 			continue
 		}
-		return candidates
+		return r.balanceCandidates(candidates)
 	}
 
 	// No rule matched: use default fallback chain
@@ -103,7 +125,27 @@ func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 			Complexity: req.ComplexityScore,
 		})
 	}
-	return results
+	return r.balanceCandidates(results)
+}
+
+// balanceCandidates sorts by least-connections with round-robin tiebreaker.
+func (r *Router) balanceCandidates(candidates []RouteResult) []RouteResult {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Backend.ActiveReqs.Load() < candidates[j].Backend.ActiveReqs.Load()
+	})
+	minLoad := candidates[0].Backend.ActiveReqs.Load()
+	tied := 1
+	for tied < len(candidates) && candidates[tied].Backend.ActiveReqs.Load() == minLoad {
+		tied++
+	}
+	if tied > 1 {
+		pick := int(r.rrCount.Add(1)-1) % tied
+		candidates[0], candidates[pick] = candidates[pick], candidates[0]
+	}
+	return candidates
 }
 
 // resolveAllBackends returns all healthy, capable backends from a rule's list.
