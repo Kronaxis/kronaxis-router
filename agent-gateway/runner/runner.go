@@ -115,6 +115,12 @@ func Run(ctx context.Context, req Request, parser Parser, events chan<- Event) (
 	rest := args[1:]
 	cmd := exec.CommandContext(runCtx, bin, rest...)
 	cmd.Dir = req.Workspace.Path()
+	// Run the CLI in its own process group so we can SIGKILL the whole tree
+	// on context cancellation. Without Setpgid, killing the direct child
+	// (e.g. /bin/sh) leaves grandchildren (e.g. sleep) orphaned and adopted
+	// by init. Cancel.go below sends SIGKILL to -pgid to nuke the whole
+	// subtree atomically.
+	configureProcessGroup(cmd)
 
 	env, err := buildEnv(req)
 	if err != nil {
@@ -138,6 +144,20 @@ func Run(ctx context.Context, req Request, parser Parser, events chan<- Event) (
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("start %s: %w", bin, err)
 	}
+
+	// On context cancellation, kill the whole process group so grandchildren
+	// (shells spawning sleeps, node spawning child workers, etc) don't leak.
+	// Note: exec.CommandContext already sends SIGKILL to the direct child,
+	// but that doesn't reach grandchildren. This goroutine adds the group kill.
+	cancelDone := make(chan struct{})
+	go func() {
+		select {
+		case <-runCtx.Done():
+			killProcessGroup(cmd)
+		case <-cancelDone:
+		}
+	}()
+	defer close(cancelDone)
 
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 

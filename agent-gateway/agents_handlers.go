@@ -90,14 +90,29 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "marshal: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Write atomically: tmp + rename.
-		tmp := path + ".tmp"
-		if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		// Atomic write with per-request temp filename so concurrent POSTs to
+		// the same profile name don't race on a shared `<name>.yaml.tmp`.
+		// The os.Rename below is atomic on POSIX; whichever goroutine renames
+		// last wins, and the in-memory registry is the source of truth anyway.
+		tmpf, err := os.CreateTemp(s.profileDir, "."+p.Name+".tmp-*")
+		if err != nil {
+			http.Error(w, "create tmp: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmpName := tmpf.Name()
+		if _, err := tmpf.Write(out); err != nil {
+			_ = tmpf.Close()
+			_ = os.Remove(tmpName)
 			http.Error(w, "write profile: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.Rename(tmp, path); err != nil {
-			_ = os.Remove(tmp)
+		if err := tmpf.Close(); err != nil {
+			_ = os.Remove(tmpName)
+			http.Error(w, "close tmp: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.Rename(tmpName, path); err != nil {
+			_ = os.Remove(tmpName)
 			http.Error(w, "commit profile: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
