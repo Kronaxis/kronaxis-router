@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // RouteRequest contains the metadata extracted from an incoming request.
@@ -19,6 +20,12 @@ type RouteRequest struct {
 	ContentType     string          // "text" or "vision" (detected from message content)
 	Stream          bool            // stream field from OpenAI request body
 	ComplexityScore ComplexityScore // 0-100 auto-classified complexity
+
+	// KVPrompt is the flattened prompt content used for KV-cache-aware
+	// prefix matching. Populated by the caller (proxy.go) from the
+	// incoming messages array. Empty when KV pinning is disabled or the
+	// request has no message history. See prefix_hash.go.
+	KVPrompt string
 }
 
 // RouteResult is the outcome of routing: which backend to use and why.
@@ -30,6 +37,11 @@ type RouteResult struct {
 }
 
 // Router evaluates routing rules and selects backends.
+// kvIndex is package-global because the Router's RouteCandidates is the
+// hot path and we don't want to thread the index through every call site.
+// It's set at startup once Backends are loaded, and updated on hot-reload.
+var kvIndex *KVIndex
+
 type Router struct {
 	rules    []RoutingRule
 	defaults DefaultsConfig
@@ -103,7 +115,7 @@ func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 		if len(candidates) == 0 {
 			continue
 		}
-		return r.balanceCandidates(candidates)
+		return r.balanceCandidatesPrompt(candidates, req.KVPrompt)
 	}
 
 	// No rule matched: use default fallback chain
@@ -128,8 +140,73 @@ func (r *Router) RouteCandidates(req RouteRequest) []RouteResult {
 	return r.balanceCandidates(results)
 }
 
-// balanceCandidates sorts by least-connections with round-robin tiebreaker.
+// balanceCandidates picks the routing order. Wrapper that omits the KV
+// prompt context; legacy callers (no prompt access) get pure least-conn.
 func (r *Router) balanceCandidates(candidates []RouteResult) []RouteResult {
+	return r.balanceCandidatesPrompt(candidates, "")
+}
+
+// balanceCandidatesPrompt is the prompt-aware variant: if a non-empty
+// kvPrompt is supplied AND the kvIndex has at least one matching prefix,
+// partitions candidates by depth (deepest first) and applies
+// least-connections + RR only within the deepest-match group. Falls
+// through to least-connections + RR when no match.
+func (r *Router) balanceCandidatesPrompt(candidates []RouteResult, kvPrompt string) []RouteResult {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+
+	if kvIndex != nil && kvPrompt != "" {
+		reordered, depth := kvIndex.ChooseByKVDepth(candidates, kvPrompt)
+		if depth > 0 {
+			candidates = reordered
+			deepGroupEnd := 1
+			for deepGroupEnd < len(candidates) {
+				if !sameKVDepth(candidates[0], candidates[deepGroupEnd], kvPrompt) {
+					break
+				}
+				deepGroupEnd++
+			}
+			deepGroup := candidates[:deepGroupEnd]
+			rest := candidates[deepGroupEnd:]
+			deepGroup = r.applyLeastConnRR(deepGroup)
+			return append(deepGroup, rest...)
+		}
+	}
+
+	return r.applyLeastConnRR(candidates)
+}
+
+// sameKVDepth reports whether two candidates have the same prefix-hash
+// depth in their respective trees, used to delimit the "deep match"
+// group during candidate ordering.
+func sameKVDepth(a, b RouteResult, prompt string) bool {
+	if kvIndex == nil {
+		return false
+	}
+	hashes := ChunkedPrefixHash(prompt, kvIndex.hashChunkTokens)
+	if len(hashes) == 0 {
+		return true
+	}
+	now := time.Now()
+	kvIndex.mu.RLock()
+	defer kvIndex.mu.RUnlock()
+	ta, oka := kvIndex.trees[a.Backend.Config.Name]
+	tb, okb := kvIndex.trees[b.Backend.Config.Name]
+	da := 0
+	db := 0
+	if oka {
+		da = ta.LookupDepth(hashes, now)
+	}
+	if okb {
+		db = tb.LookupDepth(hashes, now)
+	}
+	return da == db
+}
+
+// applyLeastConnRR is the original balance logic, factored out so the
+// KV path can call it on a sub-slice.
+func (r *Router) applyLeastConnRR(candidates []RouteResult) []RouteResult {
 	if len(candidates) <= 1 {
 		return candidates
 	}

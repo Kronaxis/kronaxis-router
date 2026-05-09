@@ -117,6 +117,34 @@ func runServer() {
 
 	// Initialise subsystems
 	pool = newBackendPool(cfg.Backends)
+
+	// Build KV cache index for any backends that opted in via kv_pinning.
+	// Each backend gets its own per-prefix tree; the index biases routing
+	// toward backends with a deep matching prefix (whose vLLM KV cache is
+	// presumed warm for that path).
+	kvIndex = NewKVIndex(0)
+	for _, b := range cfg.Backends {
+		if b.KVPinning != nil && b.KVPinning.Enabled {
+			maxAge := time.Duration(b.KVPinning.MaxPrefixAgeSeconds) * time.Second
+			kvIndex.AddBackend(b.Name, maxAge, b.KVPinning.MaxNodes)
+			if b.KVPinning.HashChunkTokens > 0 {
+				kvIndex.hashChunkTokens = b.KVPinning.HashChunkTokens
+			}
+		}
+	}
+	if pools := len(kvIndex.trees); pools > 0 {
+		logger.Printf("KV cache pinning enabled for %d backend(s)", pools)
+		// Periodic sweep evicts subtrees older than maxAge.
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if removed := kvIndex.SweepAll(); removed > 0 {
+					logger.Printf("kv index sweep: evicted %d stale prefix nodes", removed)
+				}
+			}
+		}()
+	}
 	rtr = newRouter(cfg.Rules, cfg.Defaults, pool)
 	bat = newBatcher(cfg.Batching)
 	batchMgr = newBatchManager(env("BATCH_DATA_DIR", ""))
@@ -207,6 +235,7 @@ func runServer() {
 	mux.HandleFunc("/v1/retrieve", handleGraphifyRetrieve)
 	mux.HandleFunc("/api/graphify", handleGraphifyStats)
 	mux.HandleFunc("/api/agents", handleAgents)
+	mux.HandleFunc("/api/kv-trees", handleKVTrees)
 
 	// Video generation — routes to ltx-video backends
 	mux.HandleFunc("/v1/video/generate", handleVideoGenerate)

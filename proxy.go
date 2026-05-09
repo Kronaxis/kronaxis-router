@@ -107,6 +107,13 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		meta.Tier = ClassifyPrompt(&req)
 	}
 
+	// KV prefix hash (only computed once per request; cheap when no
+	// backend has kv_pinning enabled because ChooseByKVDepth short
+	// circuits on empty index).
+	if kvIndex != nil && len(req.Messages) > 0 {
+		meta.KVPrompt = FlattenMessages(req.Messages)
+	}
+
 	// Check cache before doing anything expensive
 	cacheHit, cacheable := "", false
 	if cacheHit, cacheable = cacheKey(&req); cacheable {
@@ -383,7 +390,7 @@ func forwardToBackend(
 	_ string,
 	body []byte,
 	req *ChatRequest,
-	_ RouteRequest,
+	meta RouteRequest,
 ) (int, map[string]string, []byte, error) {
 	backend.ActiveReqs.Add(1)
 	defer backend.ActiveReqs.Add(-1)
@@ -400,6 +407,14 @@ func forwardToBackend(
 		statusCode, headers, respBody, err = forwardToOllama(backend, body, req)
 	default:
 		statusCode, headers, respBody, err = forwardToOpenAI(backend, body)
+	}
+
+	// On a successful dispatch, record this prompt prefix as warm in the
+	// chosen backend's KV tree. Future requests with the same prefix will
+	// be biased toward this backend. No-op when KV pinning isn't enabled
+	// for this backend or the request had no KVPrompt populated.
+	if err == nil && statusCode < 500 && kvIndex != nil && meta.KVPrompt != "" {
+		kvIndex.Record(backend.Config.Name, meta.KVPrompt)
 	}
 
 	// Track errors for health scoring (covers cloud backends too)

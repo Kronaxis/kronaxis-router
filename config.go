@@ -121,18 +121,33 @@ type BrandingConfig struct {
 }
 
 type BackendConfig struct {
-	Name           string   `yaml:"name" json:"name"`
-	URL            string   `yaml:"url" json:"url"`
-	Type           string   `yaml:"type" json:"type"`
-	ModelName      string   `yaml:"model_name" json:"model_name"`
-	CostInput1M    float64  `yaml:"cost_input_1m" json:"cost_input_1m"`
-	CostOutput1M   float64  `yaml:"cost_output_1m" json:"cost_output_1m"`
-	Capabilities   []string `yaml:"capabilities" json:"capabilities"`
-	MaxConcurrent  int      `yaml:"max_concurrent" json:"max_concurrent"`
-	LoRAAdapters   []string `yaml:"lora_adapters" json:"lora_adapters"`
-	APIKey         string   `yaml:"api_key" json:"api_key,omitempty"`
-	Dynamic        bool     `yaml:"dynamic" json:"dynamic"`
-	HealthEndpoint string   `yaml:"health_endpoint" json:"health_endpoint"`
+	Name           string             `yaml:"name" json:"name"`
+	URL            string             `yaml:"url" json:"url"`
+	Type           string             `yaml:"type" json:"type"`
+	ModelName      string             `yaml:"model_name" json:"model_name"`
+	CostInput1M    float64            `yaml:"cost_input_1m" json:"cost_input_1m"`
+	CostOutput1M   float64            `yaml:"cost_output_1m" json:"cost_output_1m"`
+	Capabilities   []string           `yaml:"capabilities" json:"capabilities"`
+	MaxConcurrent  int                `yaml:"max_concurrent" json:"max_concurrent"`
+	LoRAAdapters   []string           `yaml:"lora_adapters" json:"lora_adapters"`
+	APIKey         string             `yaml:"api_key" json:"api_key,omitempty"`
+	Dynamic        bool               `yaml:"dynamic" json:"dynamic"`
+	HealthEndpoint string             `yaml:"health_endpoint" json:"health_endpoint"`
+	KVPinning      *KVPinningConfig   `yaml:"kv_pinning,omitempty" json:"kv_pinning,omitempty"`
+}
+
+// KVPinningConfig enables prefix-hash routing for a backend. When set,
+// the router maintains a per-backend tree of recently-seen prompt
+// prefixes and biases routing toward the backend with the deepest
+// matching prefix (its vLLM KV cache is presumed warm for that path).
+//
+// Sane defaults: max_prefix_age_seconds = 600 (10 min), hash_chunk_tokens = 128.
+// Set Enabled: true at minimum to opt in.
+type KVPinningConfig struct {
+	Enabled             bool `yaml:"enabled" json:"enabled"`
+	MaxPrefixAgeSeconds int  `yaml:"max_prefix_age_seconds" json:"max_prefix_age_seconds"`
+	HashChunkTokens     int  `yaml:"hash_chunk_tokens" json:"hash_chunk_tokens"`
+	MaxNodes            int  `yaml:"max_nodes" json:"max_nodes"`
 }
 
 type RoutingRule struct {
