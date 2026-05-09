@@ -1,0 +1,62 @@
+════════════════════════════════════════════════════════════════
+  HACKER NEWS SUBMISSION -- READY TO PASTE
+  Submit at: https://news.ycombinator.com/submit
+════════════════════════════════════════════════════════════════
+
+OPTION A: URL submission (recommended, then paste pitch as first comment)
+─────────────────────────────────────────────────────────────────────────
+Title: Show HN: Kronaxis Router – stop paying frontier prices for tasks a local model handles
+URL:   https://github.com/Kronaxis/kronaxis-router
+Text:  (leave empty)
+
+Then immediately post the OPTION B text below as your first comment.
+
+
+OPTION B: Text submission (if you prefer body text instead of URL)
+──────────────────────────────────────────────────────────────────
+Title: Show HN: Kronaxis Router – stop paying frontier prices for tasks a local model handles
+URL:   (leave empty)
+Text:  (paste everything below this line)
+
+─── START PASTE ───
+
+Small open-weight models got good. Qwen 9B, Llama 8B, Gemma 4B handle 80% of production LLM workloads (extraction, classification, summarisation, tagging) with output quality indistinguishable from frontier APIs. The remaining 20% genuinely needs the big model.
+
+The problem is nobody routes. Every request hits the same endpoint. You are paying $3-15/1M tokens for work a free local model does identically.
+
+Kronaxis Router fixes this. Single Go binary, sits between your app and your models, classifies each request, sends it to the cheapest capable backend.
+
+The economics: local 9B costs ~$0.005/1M tokens. Cloud frontier costs $3-15/1M. 80% of traffic is extraction/classification/summarisation. Route that 80% locally and your blended cost drops from ~$10 to ~$0.50/1M.
+
+But "just use the cheap model" is not a strategy. The router samples 5% of cheap-model responses against a reference model in a background loop. If quality drops on any task category, that category auto-promotes to the next tier. Savings by default, automatic safety net.
+
+What else: failover chains, batch API routing (50% off across 7 providers), response caching (30% hit rate on extraction), per-service daily budgets (hit the limit, downgrade instead of failing), LoRA adapter routing, MCP server for Claude Code/Cursor, web dashboard, Prometheus metrics.
+
+Install:
+
+  curl -fsSL https://raw.githubusercontent.com/Kronaxis/kronaxis-router/main/install.sh | bash
+  kronaxis-router init
+  kronaxis-router
+
+One command detects Ollama, vLLM, and cloud API keys, generates config, and you are routing. OpenAI-compatible API, existing code changes one URL.
+
+How this compares:
+
+LiteLLM (Python, open source) is the closest. 100+ providers, virtual keys, spend tracking. But: Python process (300MB+, ~2K req/s vs our 22K), no cost-based routing (you pick the model, it does not classify), no quality validation, no batch API aggregation, no caching, no LoRA routing. LiteLLM is a gateway. This is a cost optimiser.
+
+OpenRouter (SaaS): zero setup, huge catalogue. But adds 5-20% margin per request, data goes through their servers, no local models. If cost reduction is the goal, a middleman margin is the wrong direction.
+
+Portkey (SaaS): strong on observability and guardrails. $99+/month. Not focused on cost routing, no local models.
+
+Martian / Not Diamond: ML-trained routing classifiers. More sophisticated, but SaaS, closed source, add network latency. Our classifier runs under 1ms with zero network calls.
+
+Honest summary: need 100+ providers, use LiteLLM. Want zero setup, use OpenRouter. Want to minimise spend with quality validation, self-host at 22K req/s on 2MB RAM: this.
+
+Single binary. 81 tests. BSL 1.1.
+
+https://github.com/Kronaxis/kronaxis-router
+
+Blog with full cost tables and comparison: https://kronaxis.co.uk/blog/llm-routing-cost-savings
+
+─── END PASTE ───
+(2,842 characters -- under the 4,000 limit)

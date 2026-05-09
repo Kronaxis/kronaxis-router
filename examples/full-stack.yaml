@@ -1,0 +1,157 @@
+# Everything at once: cost routing + caching + batching + graphify RAG +
+# agent-gateway + multi-account pools.
+#
+# This is what kronaxis itself runs in production. Most users want a subset;
+# this is the "all features turned on" reference.
+#
+# Pipeline a request takes:
+#
+#   /v1/chat/completions
+#     → cache check                  (cache.go)
+#     → graphify pre-stage           (graphify_middleware.go)
+#         → embed query, retrieve top-k from pgvector
+#         → compress fat user msg / augment thin one
+#     → classifier auto-tier         (classifier.go)
+#     → budget check                 (costs.go)
+#     → auto-batch if priority=bulk  (batch.go)
+#     → route by rule priority       (router.go)
+#     → A/B test override            (abtest.go)
+#     → forward to backend           (proxy.go)
+#         (if backend is agent-gateway: spawn `claude -p` in worktree)
+#     → quality validation sample    (quality.go)
+#     → cache the response
+#     → log cost + audit             (audit.go, costs.go)
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 120s
+  branding:
+    headers: true
+    header_name: "Kronaxis Router"
+
+backends:
+  # Local vLLM (cheapest, GPU electricity only).
+  - name: local-large
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "Qwen/Qwen3.5-27B-AWQ"
+    cost_input_1m: 0.01
+    cost_output_1m: 0.01
+    capabilities: [json_output, long_context]
+    max_concurrent: 4
+
+  - name: local-small
+    url: "http://localhost:8001"
+    type: vllm
+    model_name: "Qwen/Qwen3.5-9B-AWQ"
+    cost_input_1m: 0.005
+    cost_output_1m: 0.005
+    capabilities: [json_output]
+    max_concurrent: 8
+
+  # Cloud cheap (Gemini Flash).
+  - name: cloud-fast
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-flash"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 0.15
+    cost_output_1m: 0.60
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 50
+
+  # Cloud heavy (Gemini Pro).
+  - name: cloud-powerful
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-pro"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 1.25
+    cost_output_1m: 10.00
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 20
+
+  # Agent-gateway as a backend. The `agent-gateway` binary runs separately
+  # on port 8055; this entry tells the router about it.
+  - name: claude-code-agent
+    url: "http://localhost:8055"
+    type: openai
+    model_name: "claude-code-agent"
+    cost_input_1m: 0.0          # internal subscription
+    cost_output_1m: 0.0
+    capabilities: [tools, agentic, file_edit, long_context]
+    max_concurrent: 4
+    health_endpoint: "/healthz"
+
+rules:
+  - name: agent-tasks
+    priority: 300
+    backends: [claude-code-agent]
+    match:
+      task_type: agent
+  - name: structured-extraction
+    priority: 200
+    backends: [local-small, cloud-fast]
+    match:
+      tier: 2
+  - name: heavy-reasoning
+    priority: 200
+    backends: [local-large, cloud-powerful]
+    match:
+      tier: 1
+  - name: vision
+    priority: 150
+    backends: [cloud-fast]
+    match:
+      content_type: vision
+  - name: catch-all
+    priority: 10
+    backends: [local-small, local-large, cloud-fast]
+    match: {}
+
+defaults:
+  fallback_chain: [local-small, cloud-fast]
+
+budgets:
+  vanguard:
+    daily_usd: 50
+    on_exceed: downgrade
+  research:
+    daily_usd: 200
+    on_exceed: reject
+
+rate_limits:
+  beacon:
+    rps: 10
+    burst: 30
+
+batching:
+  enabled: true
+  window_ms: 50
+  max_batch_size: 8
+  priority_bypass:
+    - interactive
+
+# ── GRAPHIFY ───────────────────────────────────────────────────────────────
+graphify:
+  enabled: true
+  default: "auto"
+  ingest_roots:
+    - /path/to/your/codebase
+  watch_enabled: true            # live re-ingest changed files
+  ingest_concurrency: 4
+  top_k: 5
+  bm25_weight: 0.3
+  augment_budget_chars: 3200
+  compress_budget_chars: 4800
+  auto_compress_chars: 8000
+  auto_augment_max_chars: 4000
+  service_overrides:
+    animus: "augment"
+    vanguard: "compress"
+    atlas: "auto"
+    beacon: "off"
+  embedder:
+    type: "local-st"
+    url: "http://localhost:8053"

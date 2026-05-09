@@ -1,0 +1,7 @@
+port: 8055
+claude_binary: "claude"
+workspace_root: "/tmp/kx-agent"
+timeout_seconds: 600
+max_concurrent: 4
+base_repo: ""           # leave empty for fresh git init; set to a path/URL to clone
+retain_workspaces: false

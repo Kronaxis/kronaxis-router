@@ -1,0 +1,85 @@
+# Example: hybrid local + cloud (most common setup)
+# Good for: teams with GPUs who want cloud failover
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  branding:
+    headers: true
+
+backends:
+  # Local (cheapest)
+  - name: local-large
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "my-27b-model"
+    cost_input_1m: 0.01
+    cost_output_1m: 0.01
+    capabilities: [json_output, long_context]
+    max_concurrent: 4
+
+  - name: local-small
+    url: "http://localhost:8001"
+    type: vllm
+    model_name: "my-9b-model"
+    cost_input_1m: 0.005
+    cost_output_1m: 0.005
+    capabilities: [json_output]
+    max_concurrent: 8
+
+  # Cloud fallback
+  - name: gemini-flash
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-flash"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 0.15
+    cost_output_1m: 0.60
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 50
+
+rules:
+  # Interactive: fast local model, cloud failover
+  - name: interactive
+    priority: 200
+    match: { priority_level: interactive }
+    backends: [local-large, gemini-flash]
+
+  # Extraction: cheap local model first
+  - name: extraction
+    priority: 120
+    match: { tier: 2 }
+    backends: [local-small, local-large, gemini-flash]
+
+  # Reasoning: large local model first
+  - name: reasoning
+    priority: 110
+    match: { tier: 1 }
+    backends: [local-large, gemini-flash]
+
+  # Bulk: cheapest only
+  - name: bulk
+    priority: 100
+    match: { priority_level: bulk }
+    backends: [local-small, local-large]
+    max_cost_1m: 0.02
+
+defaults:
+  fallback_chain: [local-small, local-large, gemini-flash]
+
+budgets:
+  default:
+    daily_limit_usd: 100.00
+    action: downgrade
+    downgrade_target: local-small
+
+rate_limits:
+  default:
+    requests_per_second: 100
+    burst_size: 200
+
+batching:
+  enabled: true
+  window_ms: 50
+  max_batch_size: 8
+  priority_bypass: [interactive]

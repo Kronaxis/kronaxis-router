@@ -1,0 +1,51 @@
+# Pool multiple cloud-API keys for the same provider. The agent-gateway
+# rotates between them per request, auto-disables any that hit 429 / 401
+# / billing errors, and surfaces per-account stats at GET /v1/accounts.
+#
+# Use case: scale past a single API key's per-minute rate limit without
+# upgrading to a higher tier. Two $20/mo keys + round-robin = effectively
+# 2x the rate limit.
+#
+# This example is the agent-gateway's auth_pool YAML. Reference it from
+# agent-gateway's main config via `auth_pool_file:`.
+#
+# Save as: /etc/agent-gateway/auth_pool.yaml
+# In the agent-gateway config.yaml, set:
+#   auth_pool_file: "/etc/agent-gateway/auth_pool.yaml"
+#
+# All accounts here use API keys, NOT OAuth subscriptions, so commercial
+# / multi-tenant use is fine. For Claude Pro/Max OAuth pooling (personal
+# use only, ToS-gated), see oauth-subscription-pool.yaml.
+
+accounts:
+  # Anthropic API key pool (provider=anthropic uses the anthropic-sdk adapter).
+  - id: anthropic-prod
+    provider: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    notes: "Production tier, $200/mo budget"
+
+  - id: anthropic-staging
+    provider: anthropic
+    api_key_env: ANTHROPIC_API_KEY_STAGING
+    notes: "Staging account, no SLA"
+
+  # Different account for a different team / cost-centre.
+  - id: anthropic-research
+    provider: anthropic
+    api_key_env: ANTHROPIC_API_KEY_RESEARCH
+    notes: "Research team budget"
+
+  # OpenAI pool. Same shape; provider=openai uses the openai adapter.
+  - id: openai-1
+    provider: openai
+    api_key_env: OPENAI_API_KEY_1
+
+  - id: openai-2
+    provider: openai
+    api_key_env: OPENAI_API_KEY_2
+    notes: "Used when openai-1 hits org-level RPM limit"
+
+  # Gemini pool.
+  - id: gemini-1
+    provider: gemini
+    api_key_env: GEMINI_API_KEY_1

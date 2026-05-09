@@ -1,0 +1,149 @@
+package main
+
+import (
+	"bufio"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// runClaudeLogin handles `agent-gateway claude-login --name <id> [--config-dir <path>]`.
+//
+// It runs `claude auth login` with CLAUDE_CONFIG_DIR set to a per-account
+// directory so each subscription gets its own .credentials.json. The result
+// is then printable as a YAML stanza for the auth pool config.
+//
+// Personal-use ToS guard: refuses to proceed unless the user types
+// PERSONAL-USE-ONLY (or passes --i-confirm-personal-use). For any commercial
+// or external-facing deployment, use the anthropic-sdk adapter with paid API
+// keys -- pooling consumer subscriptions for resale violates Anthropic ToS.
+func runClaudeLogin(args []string) {
+	fs := flag.NewFlagSet("claude-login", flag.ExitOnError)
+	name := fs.String("name", "", "account name (required, e.g. 'sub-1')")
+	configDir := fs.String("config-dir", "", "where to put the credentials (default: /var/lib/agent-gateway/accounts/<name>/)")
+	preconfirmed := fs.Bool("i-confirm-personal-use", false, "skip the interactive ToS confirmation prompt (use only after reading the warning)")
+	notes := fs.String("notes", "", "optional notes to embed in the auth-pool YAML stanza")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *name == "" {
+		fmt.Println("usage: agent-gateway claude-login --name <id> [--config-dir <path>] [--i-confirm-personal-use] [--notes \"...\"]")
+		os.Exit(2)
+	}
+
+	if !*preconfirmed {
+		printPersonalUseWarning()
+		fmt.Print("\nType PERSONAL-USE-ONLY to confirm and proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		line, _ := reader.ReadString('\n')
+		if strings.TrimSpace(line) != "PERSONAL-USE-ONLY" {
+			fmt.Println("\nAcknowledgement not received. Aborting.")
+			fmt.Println("If you need a commercial-grade Claude integration, use the anthropic-sdk adapter")
+			fmt.Println("with paid Anthropic API keys (set ANTHROPIC_API_KEY or auth-pool provider=anthropic).")
+			os.Exit(1)
+		}
+	}
+
+	dir := *configDir
+	if dir == "" {
+		dir = filepath.Join(defaultAccountsRoot(), *name)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Println("mkdir:", err)
+		os.Exit(1)
+	}
+
+	if err := writeAckFile(dir); err != nil {
+		fmt.Println("write ack:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\nLaunching `claude auth login` with CLAUDE_CONFIG_DIR=%s\n\n", dir)
+	cmd := exec.Command("claude", "auth", "login")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+dir)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Println("claude auth login failed:", err)
+		os.Exit(1)
+	}
+
+	credentials := filepath.Join(dir, ".credentials.json")
+	if _, err := os.Stat(credentials); err != nil {
+		fmt.Println("warning: expected", credentials, "but didn't find it; check claude CLI version")
+	}
+
+	fmt.Println("\n────────────────────────────────────────────────────────────────")
+	fmt.Println("  ACCOUNT ADDED")
+	fmt.Println("────────────────────────────────────────────────────────────────")
+	fmt.Printf("\nAdd this stanza to your auth-pool YAML (config.yaml's `auth_pool_file`):\n\n")
+	fmt.Printf("- id: %s\n", *name)
+	fmt.Printf("  provider: claude-cli\n")
+	fmt.Printf("  claude_credentials_path: %s\n", credentials)
+	fmt.Printf("  window_duration: 5h\n")
+	if *notes != "" {
+		fmt.Printf("  notes: %q\n", *notes)
+	}
+	fmt.Println()
+}
+
+func defaultAccountsRoot() string {
+	if v := os.Getenv("AGENT_GATEWAY_ACCOUNTS_DIR"); v != "" {
+		return v
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".config", "agent-gateway", "accounts")
+	}
+	return "/var/lib/agent-gateway/accounts"
+}
+
+// writeAckFile records a per-account acknowledgement so loadAuthPool can verify
+// the user explicitly added each account via the gated `claude-login` flow.
+func writeAckFile(dir string) error {
+	path := filepath.Join(dir, ".personal-use-acknowledged")
+	body := fmt.Sprintf(`Added: %s
+Acknowledgement: This Claude Code OAuth subscription credential was added
+for personal/individual use only. The user has confirmed it will not be
+used for commercial resale, multi-tenant SaaS, or any other Anthropic-ToS-
+violating purpose. For commercial deployments use the anthropic-sdk adapter
+with paid API keys.
+`, time.Now().UTC().Format(time.RFC3339))
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+func printPersonalUseWarning() {
+	fmt.Println(`
+═══════════════════════════════════════════════════════════════════════
+  CLAUDE CODE OAUTH SUBSCRIPTION POOLING -- PERSONAL USE ONLY
+═══════════════════════════════════════════════════════════════════════
+
+agent-gateway can pool multiple Claude Code (Pro/Max) OAuth subscriptions
+to scale beyond a single account's 5-hour usage window. This is appropriate
+ONLY when:
+
+  ✓ All accounts belong to the same individual person (you).
+  ✓ The gateway's traffic is generated by that one person's own work.
+  ✓ No third party (paying or otherwise) consumes the rotated subscription
+    capacity.
+
+It is NOT appropriate for:
+
+  ✗ Multi-user / multi-tenant SaaS that re-sells Claude tokens.
+  ✗ Team-shared deployments where multiple people drive traffic through
+    the pool.
+  ✗ Any commercial product that bills its customers for AI capacity
+    backed by your consumer Claude subscriptions.
+
+For those cases, use the gateway's "anthropic-sdk" adapter with paid
+Anthropic API keys (provider: anthropic in the auth-pool YAML). That
+path is fully ToS-compliant and supports the same routing/failover
+features.
+
+By proceeding, you affirm that this account is yours and is being added
+for your own personal use only.`)
+}

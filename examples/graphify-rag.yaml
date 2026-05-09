@@ -1,0 +1,118 @@
+# Cost routing PLUS graphify RAG pre-stage. Compresses fat context with
+# retrieved chunks before the request even reaches the classifier, so the
+# token savings stack with whatever cheaper model the rules pick.
+#
+# Architecture:
+#
+#   request ──▶ cache check ──▶ GRAPHIFY (compress/augment) ──▶ classifier
+#                                  │
+#                                  ▼ pgvector kr_chunks
+#                                  │
+#                                  ▼ embedding-service (sentence-transformers sidecar)
+#
+# Prereqs:
+#   - Postgres with pgvector ext (CREATE EXTENSION vector;)
+#   - DATABASE_URL env var
+#   - embedding-service running (see kronaxis-router/embedding-service/)
+#
+# Bring up the embedding service:
+#   cd kronaxis-router/embedding-service
+#   docker build -t kronaxis/embedding-service .
+#   docker run -d --name kx-embedding -p 8053:8053 kronaxis/embedding-service
+#
+# Ingest a project:
+#   DATABASE_URL=postgres://... kronaxis-router graphify ingest /path/to/repo
+#
+# Run the router:
+#   DATABASE_URL=postgres://... kronaxis-router serve --config examples/graphify-rag.yaml
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 60s
+
+backends:
+  - name: cloud-cheap
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-flash"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 0.15
+    cost_output_1m: 0.60
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 50
+
+  - name: cloud-powerful
+    url: "https://generativelanguage.googleapis.com/v1beta"
+    type: gemini
+    model_name: "gemini-2.5-pro"
+    api_key: "env:GEMINI_API_KEY"
+    cost_input_1m: 1.25
+    cost_output_1m: 10.00
+    capabilities: [json_output, long_context, vision]
+    max_concurrent: 20
+
+rules:
+  - name: structured-extraction
+    priority: 200
+    backends: [cloud-cheap]
+    match:
+      task_type: extraction
+  - name: heavy-reasoning
+    priority: 100
+    backends: [cloud-powerful]
+    match:
+      tier: 1
+  - name: catch-all
+    priority: 10
+    backends: [cloud-cheap, cloud-powerful]
+    match: {}
+
+defaults:
+  fallback_chain: [cloud-cheap]
+
+# ── GRAPHIFY ───────────────────────────────────────────────────────────────
+graphify:
+  enabled: true
+
+  # Default behaviour for requests that don't set X-Kronaxis-Graphify:
+  #   off       no RAG (pass through)
+  #   augment   prepend a system message with retrieved chunks
+  #   compress  replace the fat user message with retrieved chunks
+  #   auto      heuristic on largest message size
+  default: "auto"
+
+  # Roots to ingest (used by `kronaxis-router graphify ingest <paths>`).
+  ingest_roots:
+    - /path/to/your/project
+  ingest_excludes: []         # plus built-in defaults (.git, node_modules, vendor, etc.)
+  ingest_concurrency: 4       # parallel embed batches
+
+  # Live re-ingest changed files via fsnotify (optional).
+  watch_enabled: false
+
+  # Retrieval tuning.
+  top_k: 5
+  min_cosine_sim: 0.4         # pointer-style: omit for default 0.4; explicit 0.0 = no filter
+  bm25_weight: 0.3            # 0 = pure cosine, 1 = pure keyword, 0.3 = hybrid
+
+  # Token budgets (approximate via 4 chars per token).
+  augment_budget_chars: 3200
+  compress_budget_chars: 4800
+  auto_compress_chars: 8000   # auto: messages bigger than this trigger compress
+  auto_augment_max_chars: 4000 # auto: messages smaller than this trigger augment
+
+  # Per-service mode override (read from X-Kronaxis-Service header).
+  service_overrides:
+    animus: "augment"
+    vanguard: "compress"
+    atlas: "auto"
+    beacon: "off"
+
+  # Pluggable embedder backends.
+  embedder:
+    type: "local-st"          # local-st | gemini | openai
+    url: "http://localhost:8053"
+    # model: "BAAI/bge-small-en-v1.5"  # only for type=gemini/openai
+    # api_key_env: "GEMINI_API_KEY"
+    # dim: 384

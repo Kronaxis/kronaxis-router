@@ -1,0 +1,60 @@
+# PERSONAL USE ONLY. Pool multiple Claude Code Pro/Max OAuth subscriptions
+# to scale past a single account's 5-hour usage window.
+#
+# ⚠️  Anthropic ToS: pooling consumer subscriptions is appropriate ONLY when
+#     all accounts belong to the same individual person (you), the gateway's
+#     traffic is your own, and no third party consumes the rotated capacity.
+#     For multi-tenant SaaS, team-shared deployments, or commercial resale,
+#     use the anthropic-sdk adapter with paid API keys (see
+#     multi-account-pool.yaml).
+#
+# Setup:
+#   1. For each account you own, run:
+#        agent-gateway claude-login --name sub-1
+#        agent-gateway claude-login --name sub-2
+#        ...
+#      Each command writes a per-account config dir under
+#      ~/.config/agent-gateway/accounts/<name>/ containing the OAuth
+#      .credentials.json plus a .personal-use-acknowledged marker.
+#      The auth-pool loader REQUIRES that marker -- you can't bypass the
+#      ToS gate by editing this YAML by hand.
+#
+#   2. Save this file (with your actual paths) as e.g.
+#      ~/.config/agent-gateway/auth_pool.yaml
+#
+#   3. In your agent-gateway config.yaml, set:
+#        auth_pool_file: "~/.config/agent-gateway/auth_pool.yaml"
+#
+#   4. Each /v1/chat/completions request rotates to the next available
+#      account. When one hits the 5-hour limit, it's auto-disabled until
+#      the window resets. GET /v1/accounts shows per-account stats:
+#      window_requests, window_tokens_total, window_usd_equiv,
+#      window_pct_consumed, window_resets_at.
+
+accounts:
+  - id: max-acct-1
+    provider: claude-cli
+    claude_credentials_path: /home/me/.config/agent-gateway/accounts/max-acct-1/.credentials.json
+    window_duration: 5h         # default for claude-cli; override if your tier differs
+    window_max_usd: 200         # OPTIONAL: skip account once window's $-equiv hits this
+    notes: "Personal Max account A"
+
+  - id: max-acct-2
+    provider: claude-cli
+    claude_credentials_path: /home/me/.config/agent-gateway/accounts/max-acct-2/.credentials.json
+    window_duration: 5h
+    notes: "Personal Max account B"
+
+  - id: pro-acct-3
+    provider: claude-cli
+    claude_credentials_path: /home/me/.config/agent-gateway/accounts/pro-acct-3/.credentials.json
+    window_duration: 5h
+    window_max_usd: 100         # Pro tier; smaller budget cap
+    notes: "Pro account, lower limits"
+
+# Mix and match: claude-cli OAuth subs + paid API key as a fallback. When all
+# OAuth subs are over-budget, the gateway falls through to the API key.
+  - id: anthropic-fallback
+    provider: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    notes: "Paid API fallback when all OAuth subs exhausted"

@@ -1,0 +1,60 @@
+# Wrap Claude Code as an OpenAI-compatible endpoint.
+#
+# This example shows the agent-gateway sub-service (the unique thing about
+# kronaxis-router): it spawns the real `claude` CLI in stream-json mode, in
+# an isolated git worktree, and returns a normal OpenAI streaming response
+# plus a `git diff` of any files the agent touched.
+#
+# Skills (/brainstorming, /skill-name), MCP servers, hooks, file editing,
+# the entire Claude Code surface, behind /v1/chat/completions.
+#
+# Prereqs:
+#   - `claude` CLI on PATH and `claude auth login` already done
+#     (or set ANTHROPIC_API_KEY for API-key auth)
+#   - `git` on PATH (used for ephemeral worktree per request)
+#
+# Run:
+#   cd kronaxis-router
+#   ./agent-gateway/agent-gateway -config examples/agent-gateway-claude-code.yaml
+#
+# Test:
+#   curl -N http://localhost:8055/v1/chat/completions \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model":"claude-code-agent","stream":true,
+#          "messages":[{"role":"user","content":"write hello.go that prints kronaxis"}]}'
+
+# This file is for the agent-gateway binary, not the router.
+# It uses the agent-gateway's flat config schema.
+
+port: 8055
+claude_binary: "claude"
+gemini_binary: "gemini"        # for the gemini-cli adapter (optional)
+
+# Per-request workspace (ephemeral by default; persistent via /v1/workspaces).
+workspace_root: "/tmp/kx-agent"
+base_repo: ""                  # empty = `git init`; set to a path/URL to clone
+retain_workspaces: false
+
+# Per-request budget caps.
+timeout_seconds: 600           # max wall-clock per request
+max_concurrent: 4              # parallel `claude` subprocesses
+keepalive_seconds: 15          # SSE keepalive heartbeat (0 = disable)
+
+# Background workspace cleanup.
+workspace_max_age_hours: 24
+sweep_interval_minutes: 30
+
+# Pre-create N workspaces in advance for ~0.3s cold-start vs ~3s.
+warm_pool_size: 2
+
+# JSON-line audit log (one line per request). Empty = stderr.
+audit_file: ""
+
+# anthropic-sdk adapter (the cheap-inference fallback / commercial path).
+# Only used when model = "claude-sdk-agent".
+anthropic_base_url: "https://api.anthropic.com"
+anthropic_api_key_env: "ANTHROPIC_API_KEY"
+
+# Multi-account pool for scaling past per-account limits. Empty = use the
+# host's claude auth login. See examples/oauth-subscription-pool.yaml.
+auth_pool_file: ""
