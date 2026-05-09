@@ -5,7 +5,7 @@
 <h1 align="center">Kronaxis Router</h1>
 
 <p align="center">
-  <strong>An OpenAI-compatible proxy for the LLMs you already use, plus the CLI agents you wish you could.</strong>
+  <strong>Tier-routing LLM proxy for sovereign + custom + frontier models. Sub-5ms decisions, 50&times; cheaper for 80% of requests, with the agentic CLIs you actually use bolted on as OpenAI endpoints.</strong>
 </p>
 
 <p align="center">
@@ -24,12 +24,13 @@
 
 ---
 
-Cost-routes across local + cloud models, compresses prompts with RAG before they hit any backend, and -- uniquely -- wraps the actual `claude` CLI in headless mode so Claude Code's full agentic loop (skills, MCP, hooks, file editing) is available behind `/v1/chat/completions`.
+Routes every LLM request to the **cheapest backend that can do the job**: sovereign / custom / open-weight 7-9B for the 80% of requests that don't need a frontier model, frontier APIs only for the genuinely hard 20%. Picks in **under 5 ms**, compresses prompts via pgvector RAG before they leave the box, and wraps real terminal agent CLIs (Claude Code, Codex, Aider, Gemini, Grok, llm) so each one is a regular OpenAI endpoint.
 
 ```
-your service ─POST /v1/chat/completions─▶ Kronaxis Router ─▶ vLLM / Gemini / OpenAI
-                                              │            ─▶ Claude Code (the CLI, headless)
-                                              ├─ cost-routes by rule
+your service ─POST /v1/chat/completions─▶ Kronaxis Router ─▶ sovereign vLLM (7-9B, 50× cheaper)
+                                              │            ─▶ frontier API (Anthropic / OpenAI / Gemini)
+                                              │            ─▶ agent-gateway → claude / codex / aider CLI
+                                              ├─ tier-routes by rule (5 ms p50)
                                               ├─ caches deterministic responses
                                               ├─ batches bulk to async APIs (50% off)
                                               ├─ compresses fat context via pgvector RAG
@@ -38,11 +39,11 @@ your service ─POST /v1/chat/completions─▶ Kronaxis Router ─▶ vLLM / Ge
 
 ## Why use it
 
-- **Claude Code as an OpenAI endpoint.** The agent-gateway sub-service spawns the actual `claude` binary in stream-json mode, in an isolated git worktree, returning SSE chunks with proper `tool_calls` deltas plus a final `git diff` of files the agent touched. Skills (`/brainstorming`, custom skills), MCP servers, hooks, the whole Claude Code surface, behind a vanilla OpenAI URL. Bring your own subscription via `agent-gateway claude-login`.
-- **Token-saving RAG pre-stage.** A pgvector + sentence-transformers retrieval step runs *before* the classifier. Augment mode prepends top-k chunks to thin prompts; compress mode replaces fat context with retrieved excerpts (verified saving 3,945 tokens on a single 10 KB request in production smoke). Stacks with cost routing for compounding savings.
-- **Cost routing across local + cloud.** Send simple JSON extraction to a local 7B; send hard reasoning to Gemini 2.5 Pro; let the router pick. YAML rules, hot-reloadable, no restart.
-- **Multi-account auth pool.** API-key pools (Anthropic / OpenAI / Gemini) and Claude Code OAuth subscription pools (personal use only, ToS-gated at setup). Round-robin, pin by `account_id`, auto-disable on 429 with provider-aware cooldowns (5 min for API keys, 5 hours for OAuth subs to match the window).
-- **22,770 req/s, 5 ms p50, 9.9 MB binary.** Go-native. The router itself adds 2-5 ms over the backend's actual latency.
+- **Cost routing first.** YAML rules match on task type, service, tier, priority, content type. Send JSON extraction to a local 7B at 0.005 USD / 1M tokens; send hard reasoning to Gemini 2.5 Pro at 1.25; let the router decide. Hot-reloadable, no restart. **22,770 req/s, 5 ms p50, 9.9 MB binary** — the router itself adds 2-5 ms over the backend's actual latency.
+- **Sovereign-first.** Local vLLM + Ollama backends are first-class, not afterthoughts. Run on your own GPUs (or a single Pi cluster) and only spend dollars when frontier reasoning is actually required. The pitch is *not* "cloud routing with discounts" — it's *use a sovereign 9B for 80% of work, frontier APIs for the rest*.
+- **Token-saving RAG pre-stage.** A pgvector + sentence-transformers retrieval step runs *before* the classifier. Augment mode prepends top-k chunks to thin prompts; compress mode replaces fat context with retrieved excerpts (verified saving 3,945 tokens on a single 10 KB request in production smoke). Stacks multiplicatively with cost routing.
+- **Real CLI agents as OpenAI endpoints.** A separate `agent-gateway` sub-service spawns the actual binaries: `claude` (stream-json, isolated worktree, full skills + MCP + hooks + file editing), `codex`, `aider`, plus `gemini-cli`, `grok-cli`, `llm` as supported tier. Six profiles ship built-in; drop a YAML to add your own. Each one is `model: <agent>` or `model: <agent>/<submodel>` on `/v1/chat/completions`.
+- **Multi-account auth pool.** API-key pools (Anthropic / OpenAI / Gemini / xAI / Aider-multi / llm-multi) and Claude Code OAuth subscription pools (personal use only, ToS-gated at setup). Round-robin, pin by `account_id`, auto-disable on 429 with provider-aware cooldowns (5 min for API keys, 5 hours for OAuth subs to match the window).
 
 ## How it compares
 
@@ -65,16 +66,18 @@ your service ─POST /v1/chat/completions─▶ Kronaxis Router ─▶ vLLM / Ge
 
 If you want a hosted "credits + many providers" experience, OpenRouter wins. If you want the best logging dashboard, Helicone. If you want a Python-native multi-provider client, LiteLLM. If you want to **run the proxy yourself, route by cost, and treat Claude Code as an API**, this is the only option that ships those things in one binary.
 
-## Part of the Kronaxis research stack
+## Part of the Kronaxis stack
 
-Kronaxis Router is the infrastructure layer of a four-project source-available stack:
+Kronaxis Router is the infrastructure layer of a source-available stack covering psychographics, synthetic-panel simulation, public proof, and LLM ops:
 
 1. [**DYNAMICS-8**](https://github.com/Kronaxis/dynamics-8) — eight-dimension psychographic framework with two new digital-age dimensions (CC BY 4.0 spec)
 2. [**Panel Studio**](https://github.com/Kronaxis/kronaxis-panel-studio) — synthetic consumer panels engine; 1,000 personas in 30 seconds
 3. [**KPM-1**](https://github.com/Kronaxis/kpm1-election-projections) — pre-registered, hash-verified election predictions (the public proof the stack works)
-4. **Kronaxis Router** (this repo) — the LLM proxy that makes running 65,000 simulated personas economically viable
+4. **Kronaxis Router** (this repo) — the tier-routing LLM proxy + agent gateway
 
-Each piece is independently usable. Kronaxis Router specifically exists because running 65,000-persona panels through frontier-API pricing is uneconomical — small open-weight models handle 80% of those requests identically and 50× cheaper, but only if something can route the request to the right tier in <5ms. That's this.
+**Each piece is independently usable.** Kronaxis Router runs fine without any of the others — it's a general-purpose tier-routing proxy that any team running mixed sovereign + frontier LLM workloads can drop in.
+
+The router exists because, in our own work, our personas run on custom and sovereign LLMs but the management layer needs more — observability, cost ceilings, fallback chains, agent invocation, account pooling, RAG compression. Specifically: running 65,000-persona panels through frontier-API pricing is uneconomical — small open-weight models handle 80% of those requests identically and 50× cheaper, **but only if something can route the request to the right tier in under 5 ms**. That's this. Same shape applies to any large-scale agent / synthetic-data / batch-extraction workload.
 
 ## 60-second quickstart
 
