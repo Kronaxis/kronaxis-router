@@ -122,6 +122,14 @@ type RoutingDefault struct {
 	CostClass CostClass `yaml:"cost_class,omitempty" json:"cost_class,omitempty"`
 }
 
+// LimitsSpec applies per-profile concurrency / timeout / rate limits. All
+// fields are optional; zero means "use the gateway-wide default".
+type LimitsSpec struct {
+	Concurrency    int `yaml:"concurrency,omitempty" json:"concurrency,omitempty"`         // max in-flight requests for THIS agent; 0 = no per-profile cap
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"` // override gateway TimeoutSeconds for THIS agent; 0 = inherit
+	RatePerMinute  int `yaml:"rate_per_minute,omitempty" json:"rate_per_minute,omitempty"` // throttle: max requests per minute for THIS agent; 0 = unlimited
+}
+
 // Profile is the canonical description of a registered TUI CLI agent.
 type Profile struct {
 	Name            string         `yaml:"name" json:"name"`
@@ -137,6 +145,7 @@ type Profile struct {
 	Capabilities    []string       `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	RoutingDefault  RoutingDefault `yaml:"routing_default,omitempty" json:"routing_default,omitempty"`
 	FlagsPassthrough []string      `yaml:"flags_passthrough,omitempty" json:"flags_passthrough,omitempty"`
+	Limits          LimitsSpec     `yaml:"limits,omitempty" json:"limits,omitempty"`
 	// Source records where the profile came from (builtin filename or
 	// override path). Empty until a registry sets it.
 	Source string `yaml:"-" json:"source,omitempty"`

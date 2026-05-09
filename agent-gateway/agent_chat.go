@@ -14,7 +14,27 @@ import (
 // packages directly and shares the same SSE / buffered output shape as the
 // legacy path.
 func (s *Server) handleProfileChat(w http.ResponseWriter, r *http.Request, req *ChatCompletionRequest, requestID string, startTime time.Time, rec *RequestRecord) {
-	// Concurrency cap.
+	// Per-profile limits FIRST (per-agent concurrency + rate). If the rate
+	// bucket is empty, return 429 immediately rather than blocking. Then
+	// take the global semaphore to cap total in-flight gateway requests.
+	profileName, _ := splitAgentSubmodel(req.Model)
+	var profileRelease func() = func() {}
+	if s.profileReg != nil && s.profileLimits != nil {
+		if prof, ok := s.profileReg.Get(profileName); ok {
+			pl := s.profileLimits.Get(profileName, prof.Limits.Concurrency, prof.Limits.RatePerMinute)
+			rel, ok := pl.Acquire(r.Context().Done())
+			if !ok {
+				rel()
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "rate limit exceeded for agent "+profileName, http.StatusTooManyRequests)
+				return
+			}
+			profileRelease = rel
+		}
+	}
+	defer profileRelease()
+
+	// Concurrency cap (gateway-wide).
 	select {
 	case s.sem <- struct{}{}:
 	case <-r.Context().Done():
@@ -28,11 +48,19 @@ func (s *Server) handleProfileChat(w http.ResponseWriter, r *http.Request, req *
 		req.Messages = applySkillPrefix(req.Messages, skill)
 	}
 
+	// Per-profile timeout override falls back to gateway default.
+	timeoutSec := s.cfg.TimeoutSeconds
+	if s.profileReg != nil {
+		if prof, ok := s.profileReg.Get(profileName); ok && prof.Limits.TimeoutSeconds > 0 {
+			timeoutSec = prof.Limits.TimeoutSeconds
+		}
+	}
+
 	agentReq := AgentRequest{
 		Messages:           req.Messages,
 		Model:              req.Model,
 		RequestID:          requestID,
-		TimeoutSec:         s.cfg.TimeoutSeconds,
+		TimeoutSec:         timeoutSec,
 		SystemPrompt:       req.SystemPrompt,
 		AppendSystemPrompt: req.AppendSystemPrompt,
 		Agent:              req.Agent,

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+# "Full" image: includes git so worktree-ephemeral profiles work, and a
+# minimal shell for debug. Larger (~80 MB) than the static distroless build
+# but suitable for users running first-class agentic profiles (claude / codex
+# / aider) which rely on a real git CLI.
+
+FROM golang:1.22-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0
+RUN go build -trimpath -ldflags="-s -w" -o /agent-gateway .
+RUN /agent-gateway --version >/dev/null
+
+FROM debian:12-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git tini \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /agent-gateway /usr/local/bin/agent-gateway
+
+ENV AGENT_GATEWAY_PORT=8055
+EXPOSE 8055
+
+# Add a non-root user so worktree dirs aren't owned by root.
+RUN useradd --system --create-home --uid 65532 agent
+USER agent
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-gateway"]
+CMD ["--config", "/etc/agent-gateway/config.yaml"]

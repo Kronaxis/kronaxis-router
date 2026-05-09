@@ -1,0 +1,150 @@
+name: Agent Gateway Smoke
+
+# Runs after every push that touches the agent-gateway:
+#  1) build the binary and the Docker image
+#  2) start the gateway with a fake-cli profile
+#  3) run go test -race ./... in agent-gateway/
+#  4) hit each builtin profile's /v1/agents/<name> endpoint to confirm
+#     the embedded YAML schema validates
+#  5) end-to-end: register an `echobot` profile that uses /bin/cat,
+#     send a chat completion, assert the response content matches
+#
+# The workflow does NOT exercise real CLIs (claude, codex, aider) because
+# CI doesn't have provider credentials. Production smoke for those uses a
+# separate workflow_dispatch flow that requires manually-injected secrets.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent-gateway/**'
+      - '.github/workflows/agent-gateway-smoke.yml'
+  pull_request:
+    paths:
+      - 'agent-gateway/**'
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        working-directory: agent-gateway
+        run: |
+          go mod download
+          go build -o /tmp/agent-gateway .
+
+      - name: Vet
+        working-directory: agent-gateway
+        run: go vet ./...
+
+      - name: Test (race)
+        working-directory: agent-gateway
+        run: go test -race -timeout 120s ./...
+
+      - name: Smoke -- start gateway
+        working-directory: agent-gateway
+        run: |
+          mkdir -p /tmp/gw-cfg /tmp/kx-agents /tmp/kx-workspaces
+          cat > /tmp/gw-cfg/config.yaml <<EOF
+          port: 8055
+          claude_binary: "claude"
+          workspace_root: "/tmp/kx-workspaces"
+          timeout_seconds: 30
+          max_concurrent: 4
+          keepalive_seconds: 15
+          profile_dir: "/tmp/kx-agents"
+          accounts_file: "/tmp/gw-cfg/accounts.yaml"
+          EOF
+          cat > /tmp/gw-cfg/accounts.yaml <<EOF
+          accounts:
+            - id: ci-1
+              pool: ci-test-pool
+              type: api-key
+              credential: "ci-fake-key"
+              cooldown_policy: { rate_limit: 1m, auth_failure: 1m, transient: 30s }
+          EOF
+          cat > /tmp/kx-agents/echobot.yaml <<EOF
+          name: echobot
+          tier: supported
+          cli: { command: "/bin/cat", input_mode: stdin }
+          output: { format: plain, parser: generic }
+          workspace: { type: stateless }
+          submodel: { supports: false }
+          auth: { pool: ci-test-pool, injection: env }
+          graphify: { default: "off" }
+          capabilities: [test]
+          routing_default: { tier: 3, cost_class: cheap }
+          EOF
+          /tmp/agent-gateway --config /tmp/gw-cfg/config.yaml &
+          for i in {1..20}; do
+            if curl -sf http://localhost:8055/healthz; then break; fi
+            sleep 0.5
+          done
+
+      - name: Smoke -- enumerate builtin profiles
+        run: |
+          got=$(curl -s http://localhost:8055/v1/agents | python3 -c 'import json,sys; print(",".join(sorted(p["name"] for p in json.load(sys.stdin)["data"])))')
+          want="aider,claude-cli,codex-cli,echobot,gemini-cli,grok-cli,llm"
+          test "$got" = "$want" || { echo "got=$got want=$want"; exit 1; }
+          echo "all 6 builtins + echobot loaded"
+
+      - name: Smoke -- end-to-end echobot via /v1/chat/completions
+        run: |
+          resp=$(curl -s -X POST http://localhost:8055/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"echobot","messages":[{"role":"user","content":"smoke-ping"}],"stream":false}' \
+            --max-time 10)
+          echo "response: $resp"
+          got=$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"].strip())')
+          test "$got" = "smoke-ping" || { echo "got=$got want=smoke-ping"; exit 1; }
+          echo "round-trip OK"
+
+      - name: Smoke -- 50 concurrent invocations
+        run: |
+          for i in {1..50}; do
+            curl -s -X POST http://localhost:8055/v1/chat/completions \
+              -H 'Content-Type: application/json' \
+              -d "{\"model\":\"echobot\",\"messages\":[{\"role\":\"user\",\"content\":\"req-$i\"}],\"stream\":false}" \
+              --max-time 10 > /tmp/r-$i.json &
+          done
+          wait
+          pass=0
+          for i in {1..50}; do
+            c=$(python3 -c "import json; print(json.load(open('/tmp/r-$i.json'))['choices'][0]['message']['content'].strip())" 2>/dev/null)
+            if [ "$c" = "req-$i" ]; then pass=$((pass+1)); fi
+          done
+          echo "PASS: $pass / 50"
+          test $pass -eq 50
+
+      - name: Smoke -- hot reload (drop YAML, see it appear)
+        run: |
+          cat > /tmp/kx-agents/late.yaml <<EOF
+          name: late-agent
+          tier: supported
+          cli: { command: "/bin/cat", input_mode: stdin }
+          output: { format: plain, parser: generic }
+          workspace: { type: stateless }
+          submodel: { supports: false }
+          auth: { pool: ci-test-pool, injection: env }
+          graphify: { default: "off" }
+          capabilities: [test]
+          routing_default: { tier: 3, cost_class: cheap }
+          EOF
+          sleep 0.5
+          got=$(curl -s http://localhost:8055/v1/agents/late-agent | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')
+          test "$got" = "late-agent" || { echo "hot-reload missed late-agent: $got"; exit 1; }
+
+      - name: Build Docker image (static)
+        working-directory: agent-gateway
+        run: docker build -t kronaxis-agent-gateway:ci -f Dockerfile .
+
+      - name: Stop gateway
+        if: always()
+        run: pkill -f /tmp/agent-gateway || true

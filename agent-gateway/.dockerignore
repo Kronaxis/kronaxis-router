@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.log
+*.test
+*.zip
+agent-gateway
+agent-gateway.bin
+test/
+testdata/

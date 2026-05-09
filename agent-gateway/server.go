@@ -16,19 +16,20 @@ import (
 )
 
 type Server struct {
-	cfg        *Config
-	registry   *Registry
-	sem        chan struct{}
-	logger     *log.Logger
-	audit      AuditLogger
-	pool       *WarmPool
-	metrics    *Metrics
-	wsStore    *WorkspaceStore
-	liveBus    *liveBus
-	auth       *AuthPool
-	profileReg *registryDeps
-	accountMgr *accountsDeps
-	profileDir string
+	cfg           *Config
+	registry      *Registry
+	sem           chan struct{}
+	logger        *log.Logger
+	audit         AuditLogger
+	pool          *WarmPool
+	metrics       *Metrics
+	wsStore       *WorkspaceStore
+	liveBus       *liveBus
+	auth          *AuthPool
+	profileReg    *registryDeps
+	accountMgr    *accountsDeps
+	profileDir    string
+	profileLimits *limiterStore
 }
 
 // registryDeps and accountsDeps are aliases re-declared in deps.go so the
@@ -49,9 +50,10 @@ func newServer(cfg *Config, reg *Registry, logger *log.Logger, audit AuditLogger
 		wsStore:    newWorkspaceStore(),
 		liveBus:    bus,
 		auth:       auth,
-		profileReg: profileReg,
-		accountMgr: accountMgr,
-		profileDir: profileDir,
+		profileReg:    profileReg,
+		accountMgr:    accountMgr,
+		profileDir:    profileDir,
+		profileLimits: newLimiterStore(),
 	}
 }
 

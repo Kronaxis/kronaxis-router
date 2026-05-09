@@ -25,6 +25,9 @@ func main() {
 		case "claude-login":
 			runClaudeLogin(os.Args[2:])
 			return
+		case "accounts":
+			runAccountsCmd(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Println("agent-gateway")
 			return
@@ -113,7 +116,11 @@ func main() {
 		"pools": accountMgr.Pools(),
 	})
 
-	// Watch override directory for hot-reload.
+	srv := newServer(cfg, reg, logger, audit, pool, metrics, bus, authPool, profileReg, accountMgr, profileDir)
+
+	// Watch override directory for hot-reload. profile_updated events
+	// invalidate any cached per-profile limiter so live limit changes
+	// take effect on the next request.
 	if events, err := profileReg.Watch(rootCtx); err == nil && events != nil {
 		go func() {
 			for ev := range events {
@@ -123,11 +130,12 @@ func main() {
 				}
 				logger.Printf("profile %s: %s", ev.Type, ev.Name)
 				audit.Event("profile_"+string(ev.Type), map[string]any{"name": ev.Name})
+				if srv.profileLimits != nil && (ev.Type == "updated" || ev.Type == "deleted") {
+					srv.profileLimits.Reset(ev.Name)
+				}
 			}
 		}()
 	}
-
-	srv := newServer(cfg, reg, logger, audit, pool, metrics, bus, authPool, profileReg, accountMgr, profileDir)
 
 	startWorkspaceSweeper(rootCtx, cfg.WorkspaceRoot,
 		time.Duration(cfg.WorkspaceMaxAgeHours)*time.Hour,
