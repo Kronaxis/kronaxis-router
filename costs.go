@@ -39,6 +39,14 @@ func newCostTracker(budgets map[string]BudgetConfig, db *sql.DB) *CostTracker {
 	return ct
 }
 
+// spentToday returns the cumulative USD spend for a given service since
+// midnight UTC. Used by the cost forecaster.
+func (ct *CostTracker) spentToday(service string) float64 {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+	return ct.dailyCosts[service]
+}
+
 func (ct *CostTracker) updateBudgets(budgets map[string]BudgetConfig) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()

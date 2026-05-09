@@ -117,6 +117,7 @@ func runServer() {
 
 	// Initialise subsystems
 	pool = newBackendPool(cfg.Backends)
+	initDPOExporterFromEnv()
 
 	// Build KV cache index for any backends that opted in via kv_pinning.
 	// Each backend gets its own per-prefix tree; the index biases routing
@@ -236,6 +237,13 @@ func runServer() {
 	mux.HandleFunc("/api/graphify", handleGraphifyStats)
 	mux.HandleFunc("/api/agents", handleAgents)
 	mux.HandleFunc("/api/kv-trees", handleKVTrees)
+	mux.HandleFunc("/v1/sessions", handleSessions)
+	mux.HandleFunc("/v1/sessions/", handleSessionItem)
+	mux.HandleFunc("/api/dpo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, handleDPOStatsBody())
+	})
+	mux.HandleFunc("/api/costs/forecast", handleCostForecast)
+	mux.HandleFunc("/api/shadow/stats", handleShadowResults)
 
 	// Video generation — routes to ltx-video backends
 	mux.HandleFunc("/v1/video/generate", handleVideoGenerate)
@@ -329,6 +337,14 @@ func runMigrations() {
 		if _, err := db.Exec(m); err != nil {
 			logger.Printf("migration warning: %v", err)
 		}
+	}
+	// Stateful sessions table (kr_sessions).
+	if err := runSessionMigrations(db); err != nil {
+		logger.Printf("session migration warning: %v", err)
+	} else {
+		sessionStore = NewSessionStore(db, 3600)
+		go SessionSweeperLoop(context.Background(), sessionStore, 5*time.Minute)
+		logger.Println("stateful sessions enabled (kr_sessions table)")
 	}
 }
 

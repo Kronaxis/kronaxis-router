@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,6 +107,39 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta.ComplexityScore = classifier.ScoreComplexity(&req)
 	if meta.Tier == 0 {
 		meta.Tier = ClassifyPrompt(&req)
+	}
+
+	// Stateful session hydration: if the caller passed
+	// X-Kronaxis-Session-Create or X-Kronaxis-Session-ID, the merged
+	// transcript replaces req.Messages here. New sessions get their ID
+	// surfaced via the X-Kronaxis-Session-ID response header below.
+	var (
+		sessionID    string
+		newSession   bool
+	)
+	if sessionStore != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		id, isNew, herr := hydrateSessionRequest(ctx, r, &req)
+		cancel()
+		if herr != nil {
+			if errors.Is(herr, ErrNoSession) {
+				writeErrorJSON(w, http.StatusNotFound, "session not found")
+				return
+			}
+			logger.Printf("session hydrate error: %v", herr)
+		}
+		sessionID = id
+		newSession = isNew
+		if sessionID != "" {
+			w.Header().Set("X-Kronaxis-Session-ID", sessionID)
+			if newSession {
+				w.Header().Set("X-Kronaxis-Session-Created", "true")
+			}
+			// Re-marshal so downstream forwarders see the merged messages.
+			if newBody, mErr := json.Marshal(req); mErr == nil {
+				body = newBody
+			}
+		}
 	}
 
 	// KV prefix hash (only computed once per request; cheap when no
