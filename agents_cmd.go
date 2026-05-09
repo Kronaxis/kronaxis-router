@@ -64,6 +64,7 @@ global flags:
 }
 
 func runAgentsRegister(args []string) {
+	args = reorderFlagsFirst(args)
 	fs := flag.NewFlagSet("register", flag.ExitOnError)
 	gateway := fs.String("gateway", "http://localhost:8055", "agent-gateway base URL")
 	configPath := fs.String("config", AgentConfigPath(), "router config.yaml")
@@ -125,6 +126,7 @@ func runAgentsList(args []string) {
 }
 
 func runAgentsRemove(args []string) {
+	args = reorderFlagsFirst(args)
 	fs := flag.NewFlagSet("remove", flag.ExitOnError)
 	configPath := fs.String("config", AgentConfigPath(), "router config.yaml")
 	if err := fs.Parse(args); err != nil {
@@ -142,6 +144,7 @@ func runAgentsRemove(args []string) {
 }
 
 func runAgentsTest(args []string) {
+	args = reorderFlagsFirst(args)
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	gateway := fs.String("gateway", "http://localhost:8055", "agent-gateway base URL")
 	prompt := fs.String("prompt", "Reply with the literal word READY and nothing else.", "smoke prompt")
@@ -277,6 +280,41 @@ func runAgentsSync(args []string) {
 		return
 	}
 	fmt.Printf("done: %d added, %d skipped\n", added, skipped)
+}
+
+// reorderFlagsFirst moves all flag-style args (--foo, --foo=v, --foo v) to
+// the front so Go's flag.Parse, which stops at the first non-flag, doesn't
+// silently ignore a flag that follows a positional argument.
+func reorderFlagsFirst(args []string) []string {
+	flags, positional := []string{}, []string{}
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if strings.HasPrefix(a, "--") || strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			// If the flag has an explicit value (--foo=bar), it's atomic.
+			// Otherwise, peek at the next arg: if it doesn't start with '-',
+			// it's the value for this flag. (Booleans don't have values, but
+			// passing an extra flag-token is harmless because flag.Parse
+			// will accept --name only when defined as a bool.)
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				// Don't consume the next token if this looks like a known
+				// boolean flag. Conservative: consume only if the next token
+				// starts with a slash, alpha, or quote that's likely a value.
+				next := args[i+1]
+				if next != "" && (next[0] == '/' || next[0] == '"' || next[0] == '.' ||
+					(next[0] >= 'a' && next[0] <= 'z') || (next[0] >= 'A' && next[0] <= 'Z') ||
+					(next[0] >= '0' && next[0] <= '9')) {
+					flags = append(flags, next)
+					i++
+				}
+			}
+		} else {
+			positional = append(positional, a)
+		}
+		i++
+	}
+	return append(flags, positional...)
 }
 
 func agentBaseName(model string) string {
