@@ -10,8 +10,9 @@
 
 <p align="center">
   <a href="LICENSE">BSL 1.1</a> &middot;
-  <a href="https://kronaxis.co.uk">Website</a> &middot;
-  <a href="https://kronaxis.co.uk/research">Research portfolio</a> &middot;
+  <a href="https://kronaxis.co.uk/kronaxis-router">Project page</a> &middot;
+  <a href="https://kronaxis.co.uk/research">Research microsite</a> &middot;
+  <a href="https://kronaxis.co.uk/blog/llm-routing-cost-savings">Blog post</a> &middot;
   <a href="examples/">Examples</a> &middot;
   <a href="CHANGELOG.md">Changelog</a>
 </p>

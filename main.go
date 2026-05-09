@@ -206,6 +206,7 @@ func runServer() {
 	mux.HandleFunc("/api/abtests", handleABTests)
 	mux.HandleFunc("/v1/retrieve", handleGraphifyRetrieve)
 	mux.HandleFunc("/api/graphify", handleGraphifyStats)
+	mux.HandleFunc("/api/agents", handleAgents)
 
 	// Video generation — routes to ltx-video backends
 	mux.HandleFunc("/v1/video/generate", handleVideoGenerate)
