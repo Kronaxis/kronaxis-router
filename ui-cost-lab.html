@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kronaxis Router — Cost Lab</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  nav { display: flex; gap: 4px; }
+  nav button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  nav button.active { background: var(--accent); color: #0d1117; border-color: var(--accent); }
+  nav button:hover:not(.active) { border-color: var(--accent); }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; }
+  td.good { color: var(--good); }
+  td.warn { color: var(--warn); }
+  td.bad { color: var(--bad); }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+  }
+  .stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+  }
+  .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-family: var(--mono); font-size: 22px; margin-top: 6px; }
+  .empty { color: var(--muted); font-style: italic; padding: 24px; text-align: center; }
+  .err { color: var(--bad); padding: 12px; background: rgba(248, 81, 73, 0.08); border-radius: 6px; margin-bottom: 16px; }
+  .footer { color: var(--muted); font-size: 11px; text-align: right; margin-top: 24px; }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-family: var(--mono);
+  }
+  .pill-good { background: rgba(63, 185, 80, 0.15); color: var(--good); }
+  .pill-warn { background: rgba(210, 153, 34, 0.15); color: var(--warn); }
+  .pill-bad { background: rgba(248, 81, 73, 0.15); color: var(--bad); }
+  .view { display: none; }
+  .view.active { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Cost Lab</h1>
+    <div class="subtitle">Kronaxis Router · live receipts</div>
+  </div>
+  <nav id="tabs">
+    <button class="active" data-view="today">Today</button>
+    <button data-view="forecast">Forecast</button>
+    <button data-view="shadow">Shadow</button>
+    <button data-view="dpo">DPO</button>
+  </nav>
+</header>
+
+<main>
+  <div id="errBox" class="err" style="display:none"></div>
+
+  <section id="view-today" class="view active">
+    <div class="panel">
+      <h2>Today's spend by service</h2>
+      <div id="todayStats" class="stat-grid"></div>
+      <div id="todayEmpty" class="empty" style="display:none">No spend recorded today.</div>
+    </div>
+    <div class="panel">
+      <h2>Per backend totals</h2>
+      <table id="backendTable">
+        <thead><tr><th>Backend</th><th class="num">Status</th><th class="num">Active reqs</th><th class="num">Latency p50</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="view-forecast" class="view">
+    <div class="panel">
+      <h2>Daily budget forecast</h2>
+      <table id="forecastTable">
+        <thead><tr>
+          <th>Service</th>
+          <th class="num">Spent / Budget</th>
+          <th class="num">Burn rate £/h</th>
+          <th class="num">Projected total</th>
+          <th class="num">Status</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="forecastEmpty" class="empty" style="display:none">No services with budgets configured.</div>
+    </div>
+  </section>
+
+  <section id="view-shadow" class="view">
+    <div class="panel">
+      <h2>Shadow A/B tests</h2>
+      <table id="shadowTable">
+        <thead><tr>
+          <th>Test</th>
+          <th>Variant A (primary)</th>
+          <th>Variant B (shadow)</th>
+          <th class="num">Split %</th>
+          <th class="num">Comparisons</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="shadowEmpty" class="empty" style="display:none">No shadow tests configured. Add via <code>ab_tests:</code> in config.yaml.</div>
+    </div>
+  </section>
+
+  <section id="view-dpo" class="view">
+    <div class="panel">
+      <h2>DPO export status</h2>
+      <div id="dpoStats" class="stat-grid"></div>
+      <div id="dpoEmpty" class="empty" style="display:none">DPO export not enabled. Set <code>DPO_EXPORT_PATH</code> env var to enable.</div>
+    </div>
+  </section>
+
+  <div class="footer">Updated <span id="updated">never</span> · Auto refresh every 10 s</div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+  const fmtUSD = (n, currency = 'GBP') => new Intl.NumberFormat('en-GB', { style: 'currency', currency }).format(n || 0);
+  const fmtNum = n => new Intl.NumberFormat('en-GB').format(n || 0);
+
+  function showError(msg) {
+    const box = $('#errBox');
+    box.textContent = msg;
+    box.style.display = msg ? 'block' : 'none';
+  }
+
+  async function fetchJSON(path) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(path + ' -> ' + res.status);
+    return res.json();
+  }
+
+  async function renderToday() {
+    try {
+      const [costs, backends] = await Promise.all([
+        fetchJSON('/api/costs').catch(() => ({})),
+        fetchJSON('/api/backends').catch(() => ({})),
+      ]);
+      const services = costs.daily_costs || costs.services || {};
+      const grid = $('#todayStats');
+      grid.innerHTML = '';
+      const entries = Object.entries(services);
+      $('#todayEmpty').style.display = entries.length === 0 ? 'block' : 'none';
+      entries.forEach(([service, spend]) => {
+        const div = document.createElement('div');
+        div.className = 'stat';
+        div.innerHTML = `<div class="stat-label">${escapeHTML(service)}</div><div class="stat-value">${fmtUSD(spend, 'USD')}</div>`;
+        grid.appendChild(div);
+      });
+      const tbody = $('#backendTable tbody');
+      tbody.innerHTML = '';
+      const list = backends.backends || backends.data || [];
+      list.forEach(b => {
+        const tr = document.createElement('tr');
+        const statusClass = b.status === 'healthy' ? 'pill-good' : (b.status === 'degraded' ? 'pill-warn' : 'pill-bad');
+        tr.innerHTML = `
+          <td>${escapeHTML(b.name)}</td>
+          <td class="num"><span class="pill ${statusClass}">${escapeHTML(b.status || 'unknown')}</span></td>
+          <td class="num">${fmtNum(b.active_requests || 0)}</td>
+          <td class="num">${b.latency_ms != null ? b.latency_ms + ' ms' : '-'}</td>`;
+        tbody.appendChild(tr);
+      });
+    } catch (e) { showError('today: ' + e.message); return; }
+    showError('');
+  }
+
+  async function renderForecast() {
+    try {
+      const data = await fetchJSON('/api/costs/forecast');
+      const rows = data.data || [];
+      const tbody = $('#forecastTable tbody');
+      tbody.innerHTML = '';
+      $('#forecastEmpty').style.display = rows.length === 0 ? 'block' : 'none';
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        const statusCell = r.projected_over_budget
+          ? `<span class="pill pill-bad">over by ${fmtUSD(r.projected_total_usd - r.budget_usd, 'USD')}</span>`
+          : (r.budget_exhaustion_time
+              ? `<span class="pill pill-warn">ETA ${new Date(r.budget_exhaustion_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>`
+              : `<span class="pill pill-good">ok</span>`);
+        tr.innerHTML = `
+          <td>${escapeHTML(r.service)}</td>
+          <td class="num">${fmtUSD(r.spent_so_far_usd, 'USD')} / ${fmtUSD(r.budget_usd, 'USD')}</td>
+          <td class="num">${fmtUSD(r.burn_rate_usd_per_hour, 'USD')}</td>
+          <td class="num">${fmtUSD(r.projected_total_usd, 'USD')}</td>
+          <td class="num">${statusCell}</td>`;
+        tbody.appendChild(tr);
+      });
+    } catch (e) { showError('forecast: ' + e.message); return; }
+    showError('');
+  }
+
+  async function renderShadow() {
+    try {
+      const data = await fetchJSON('/api/shadow/stats').catch(() => ({ tests: [] }));
+      const tests = data.tests || [];
+      const tbody = $('#shadowTable tbody');
+      tbody.innerHTML = '';
+      $('#shadowEmpty').style.display = tests.length === 0 ? 'block' : 'none';
+      tests.forEach(t => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHTML(t.name)}</td>
+          <td>${escapeHTML(t.variant_a || '-')}</td>
+          <td>${escapeHTML(t.variant_b || '-')}</td>
+          <td class="num">${t.split_pct || 0}%</td>
+          <td class="num">${fmtNum(data.results_recorded || 0)}</td>`;
+        tbody.appendChild(tr);
+      });
+    } catch (e) { showError('shadow: ' + e.message); return; }
+    showError('');
+  }
+
+  async function renderDPO() {
+    try {
+      const data = await fetchJSON('/api/dpo');
+      $('#dpoEmpty').style.display = data.enabled ? 'none' : 'block';
+      const grid = $('#dpoStats');
+      grid.innerHTML = '';
+      if (data.enabled) {
+        [['Status', 'enabled'], ['Path', data.path || '-'], ['Pairs written', fmtNum(data.written)], ['Dropped', fmtNum(data.dropped)]].forEach(([k, v]) => {
+          const div = document.createElement('div');
+          div.className = 'stat';
+          div.innerHTML = `<div class="stat-label">${escapeHTML(k)}</div><div class="stat-value">${escapeHTML(String(v))}</div>`;
+          grid.appendChild(div);
+        });
+      }
+    } catch (e) { showError('dpo: ' + e.message); return; }
+    showError('');
+  }
+
+  function escapeHTML(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function bindTabs() {
+    $$('#tabs button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        $$('#tabs button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        $$('.view').forEach(v => v.classList.remove('active'));
+        $('#view-' + btn.dataset.view).classList.add('active');
+      });
+    });
+  }
+
+  async function refreshAll() {
+    await Promise.all([renderToday(), renderForecast(), renderShadow(), renderDPO()]);
+    $('#updated').textContent = new Date().toLocaleTimeString('en-GB');
+  }
+
+  bindTabs();
+  refreshAll();
+  setInterval(refreshAll, 10_000);
+})();
+</script>
+</body>
+</html>

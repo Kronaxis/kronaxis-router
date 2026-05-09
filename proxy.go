@@ -435,6 +435,14 @@ func forwardToBackend(
 	var respBody []byte
 	var err error
 
+	// Provider cache breakpoint injection: if this backend opted in,
+	// add Anthropic ephemeral markers on the stable prefix. Off by
+	// default so non Anthropic backends don't accidentally get a
+	// payload they reject.
+	if backend.Config.CacheBreakpoints {
+		body = InjectAnthropicCacheBreakpoints(body)
+	}
+
 	switch backend.Config.Type {
 	case "gemini":
 		statusCode, headers, respBody, err = forwardToGemini(backend, body, req)

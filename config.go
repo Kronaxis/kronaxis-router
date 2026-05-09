@@ -134,6 +134,18 @@ type BackendConfig struct {
 	Dynamic        bool               `yaml:"dynamic" json:"dynamic"`
 	HealthEndpoint string             `yaml:"health_endpoint" json:"health_endpoint"`
 	KVPinning      *KVPinningConfig   `yaml:"kv_pinning,omitempty" json:"kv_pinning,omitempty"`
+	// CacheBreakpoints, when true, instructs the proxy to inject
+	// provider specific cache markers (currently Anthropic ephemeral)
+	// onto the stable prefix of the messages array before forwarding.
+	// Stacks with stateful sessions: sessions store the full transcript
+	// once on the gateway; cache breakpoints make the provider's own
+	// cache hit on the same prefix on every subsequent turn.
+	//
+	// Off by default. Only enable for backends whose API understands
+	// the Anthropic content array + cache_control: ephemeral shape
+	// (Anthropic native, or OpenRouter / similar gateways that pass
+	// it through).
+	CacheBreakpoints bool `yaml:"cache_breakpoints,omitempty" json:"cache_breakpoints,omitempty"`
 }
 
 // KVPinningConfig enables prefix-hash routing for a backend. When set,

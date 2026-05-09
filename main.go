@@ -244,6 +244,8 @@ func runServer() {
 	})
 	mux.HandleFunc("/api/costs/forecast", handleCostForecast)
 	mux.HandleFunc("/api/shadow/stats", handleShadowResults)
+	mux.HandleFunc("/cost-lab", handleCostLab)
+	mux.HandleFunc("/cost-lab/", handleCostLab)
 
 	// Video generation — routes to ltx-video backends
 	mux.HandleFunc("/v1/video/generate", handleVideoGenerate)
