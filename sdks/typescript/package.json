@@ -1,6 +1,6 @@
 {
   "name": "kronaxis-router",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "description": "TypeScript SDK for Kronaxis Router - intelligent LLM proxy",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
