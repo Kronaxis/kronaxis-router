@@ -37,6 +37,8 @@ func runAgentsCmd(args []string) {
 		runAgentsRemove(rest)
 	case "test":
 		runAgentsTest(rest)
+	case "sync":
+		runAgentsSync(rest)
 	case "help", "-h", "--help":
 		printAgentsUsage()
 	default:
@@ -53,7 +55,8 @@ subcommands:
   register <name>     register a CLI agent as a routable backend
   list                list registered agents
   remove  <name>      remove a registered agent
-  test    <name>      send a smoke prompt through the agent
+  test    <name>      send a smoke prompt through the agent (end-to-end)
+  sync                bulk-register every profile the gateway exposes
 
 global flags:
   --gateway URL       agent-gateway base URL (default http://localhost:8055)
@@ -142,7 +145,9 @@ func runAgentsTest(args []string) {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	gateway := fs.String("gateway", "http://localhost:8055", "agent-gateway base URL")
 	prompt := fs.String("prompt", "Reply with the literal word READY and nothing else.", "smoke prompt")
-	timeout := fs.Duration("timeout", 30*time.Second, "request timeout")
+	timeout := fs.Duration("timeout", 60*time.Second, "request timeout")
+	verbose := fs.Bool("v", false, "verbose: print full response JSON")
+	viaRouter := fs.String("via-router", "", "if set, send through this router base URL instead of the gateway directly")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -151,24 +156,141 @@ func runAgentsTest(args []string) {
 		os.Exit(2)
 	}
 	model := fs.Arg(0)
+
+	// Pre-flight: confirm the agent is registered on the gateway.
+	if _, err := fetchProfile(*gateway, agentBaseName(model)); err != nil {
+		fmt.Fprintf(os.Stderr, "agent %q not on gateway %s: %v\n", agentBaseName(model), *gateway, err)
+		os.Exit(1)
+	}
+
+	target := strings.TrimRight(*gateway, "/") + "/v1/chat/completions"
+	if *viaRouter != "" {
+		target = strings.TrimRight(*viaRouter, "/") + "/v1/chat/completions"
+	}
+
 	body := map[string]any{
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": *prompt}},
 		"stream":   false,
 	}
 	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", strings.TrimRight(*gateway, "/")+"/v1/chat/completions", strings.NewReader(string(raw)))
-	req.Header.Set("Content-Type", "application/json")
+	httpReq, _ := http.NewRequest("POST", target, strings.NewReader(string(raw)))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
 	client := &http.Client{Timeout: *timeout}
-	resp, err := client.Do(req)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
-	fmt.Printf("status: %d\n", resp.StatusCode)
-	fmt.Println(string(out))
+	elapsed := time.Since(start)
+
+	fmt.Printf("model:       %s\n", model)
+	fmt.Printf("target:      %s\n", target)
+	fmt.Printf("http status: %d\n", resp.StatusCode)
+	fmt.Printf("elapsed:     %s\n", elapsed.Round(time.Millisecond))
+
+	// Parse OpenAI chat-completion shape and report verdict.
+	var chat struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+		Error any `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(out, &chat); err != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\nbody: %s\n", err, string(out))
+		os.Exit(1)
+	}
+	if chat.Error != nil {
+		fmt.Printf("verdict:     FAIL (error returned: %v)\n", chat.Error)
+		os.Exit(1)
+	}
+	if len(chat.Choices) == 0 {
+		fmt.Printf("verdict:     FAIL (no choices in response)\n")
+		os.Exit(1)
+	}
+	content := strings.TrimSpace(chat.Choices[0].Message.Content)
+	fmt.Printf("tokens:      %d in / %d out\n", chat.Usage.PromptTokens, chat.Usage.CompletionTokens)
+	if *verbose {
+		fmt.Println("--- response ---")
+		fmt.Println(string(out))
+	}
+	fmt.Printf("response:    %s\n", truncate(content, 240))
+	if resp.StatusCode == 200 && content != "" {
+		fmt.Println("verdict:     OK")
+		return
+	}
+	fmt.Println("verdict:     FAIL (empty content or non-200 status)")
+	os.Exit(1)
+}
+
+func runAgentsSync(args []string) {
+	fs := flag.NewFlagSet("sync", flag.ExitOnError)
+	gateway := fs.String("gateway", "http://localhost:8055", "agent-gateway base URL")
+	configPath := fs.String("config", AgentConfigPath(), "router config.yaml")
+	dryRun := fs.Bool("dry-run", false, "print what would be added; do not write")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	profs, err := fetchProfileList(*gateway)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sync: list profiles: %v\n", err)
+		os.Exit(1)
+	}
+	added := 0
+	skipped := 0
+	for _, p := range profs {
+		in := AgentSynthInput{
+			Name:         p.Name,
+			GatewayURL:   *gateway,
+			Model:        p.Name,
+			Tier:         p.RoutingDefault.Tier,
+			CostClass:    p.RoutingDefault.CostClass,
+			Capabilities: p.Capabilities,
+		}
+		if *dryRun {
+			fmt.Printf("[dry-run] would register %-20s tier=%d cost=%-8s caps=%v\n",
+				in.Name, in.Tier, in.CostClass, in.Capabilities)
+			continue
+		}
+		if err := SynthAgentBackend(*configPath, in); err != nil {
+			fmt.Fprintf(os.Stderr, "sync %s: %v\n", p.Name, err)
+			skipped++
+			continue
+		}
+		fmt.Printf("registered %-20s tier=%d cost=%s\n", in.Name, in.Tier, in.CostClass)
+		added++
+	}
+	if *dryRun {
+		fmt.Printf("dry-run: %d profiles\n", len(profs))
+		return
+	}
+	fmt.Printf("done: %d added, %d skipped\n", added, skipped)
+}
+
+func agentBaseName(model string) string {
+	if i := strings.IndexByte(model, '/'); i >= 0 {
+		return model[:i]
+	}
+	return model
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // fetchProfile retrieves a profile from the agent-gateway's /v1/agents/<name>.

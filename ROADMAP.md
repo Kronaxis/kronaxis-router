@@ -22,10 +22,15 @@ Kronaxis Router is a production-grade LLM proxy (~9,000 lines of Go) that routes
 - Embedded web UI (dashboard, flow builder, backend manager, cost analysis)
 - Hot-reloadable config, single binary, 2.1 MB memory under load
 
+### Added 2026-05-09 (see CHANGELOG)
+
+- **CLI-Agent Gateway expansion (the framework)** -- `agent-gateway/` (port 8055) graduated from a Claude-Code-specific wrapper into a tiered-registry framework that exposes any genuine TUI agent CLI behind a single OpenAI-compatible endpoint. Six built-in profiles: `claude-cli`, `codex-cli`, `aider` (first-class, deep stream parsers) plus `gemini-cli`, `grok-cli`, `llm` (supported, generic streamer). Universal account pool generalised from the previous Anthropic-only pool with provider-aware cooldowns. Profile-declared workspace lifecycle (worktree-ephemeral / dir-ephemeral / stateless). Submodel surface (`model: <agent>/<submodel>` parsed and validated against profile allowlist). Profile-declared graphify default. New API: `GET/POST /v1/agents`, `GET/DELETE /v1/agents/<name>`, `POST /v1/accounts/test`, extended `GET /v1/accounts`. New CLI: `kronaxis-router agents register|list|sync|remove|test`. New router endpoint: `GET /api/agents`. Idempotent rule synthesis writer (`synth.go`) preserves comments + unrelated keys. 50+ tests pass under `go test -race`.
+- **BSL 1.1 relicense** -- repo relicensed from Apache 2.0 to Business Source License 1.1, converts to Apache 2.0 on 9 May 2031 (Change Date). Source-available with non-commercial Additional Use Grant; commercial production use before the Change Date requires a separate licence.
+
 ### Added 2026-05-08 (see CHANGELOG)
 
 - **graphify pre-stage** -- token-saving RAG that runs before classifier and cost routing. pgvector + sentence-transformers (default `BAAI/bge-small-en-v1.5`, swappable to gemini/openai). Hybrid retrieval (HNSW cosine + BM25 reranking). Modes: `compress`, `augment`, `auto`, `off`. Live re-ingest via fsnotify watcher. Adds `POST /v1/retrieve`, `GET /api/graphify`, `kronaxis-router ingest <paths>`, and graphify Prometheus counters. Disabled by default.
-- **agent-gateway sub-service** at `agent-gateway/` (port 8055) -- OpenAI-compatible HTTP wrapper around CLI agents. Three real adapters: `claude-cli` (full agentic Claude Code via stream-json subprocess in ephemeral worktree), `anthropic-sdk` (cheap stateless inference), `gemini-cli` (basic stdout). Multi-account auth pool with provider-aware cooldowns. Persistent named workspaces, warm pool, TTL sweeper, audit log, web UI, systemd unit. 22 Go files / ~3,063 LOC. Wired into the router as a regular `type: openai` backend (commented stanza in `config.yaml`).
+- **agent-gateway sub-service** at `agent-gateway/` (port 8055) -- initial OpenAI-compatible HTTP wrapper around CLI agents. Superseded by the 2026-05-09 framework expansion above.
 - **Claude Code OAuth subscription pooling (personal use only)** -- in-process gate at first run requires user to confirm non-commercial intent; if they pick "commercial" the subscription path is disabled and only API-key adapters remain available.
 
 ## Phase 1: Local cluster intelligence
