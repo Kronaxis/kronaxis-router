@@ -1,11 +1,39 @@
 # agent-gateway
 
-OpenAI-compatible HTTP gateway that wraps CLI agents (Claude Code today, Gemini CLI as a real adapter, Anthropic SDK for cheap inference). Lives next to `kronaxis-router` and is fronted by it as a regular `type: openai` backend.
+OpenAI-compatible HTTP gateway that wraps any genuine terminal agent CLI behind a single `/v1/chat/completions` endpoint. Lives next to `kronaxis-router` and is fronted by it as a regular OpenAI-compatible backend.
 
 **Port:** 8055
 **Location:** `kronaxis-router/agent-gateway/`
-**Design:** [../../docs/plans/2026-05-08-agent-gateway-design.md](../../docs/plans/2026-05-08-agent-gateway-design.md)
-**Plan:** [../../docs/plans/2026-05-08-agent-gateway-implementation-plan.md](../../docs/plans/2026-05-08-agent-gateway-implementation-plan.md)
+**Design (current):** [../../docs/plans/2026-05-09-cli-agent-gateway-expansion-design.md](../../docs/plans/2026-05-09-cli-agent-gateway-expansion-design.md)
+**Plan (current):** [../../docs/plans/2026-05-09-cli-agent-gateway-expansion-implementation-plan.md](../../docs/plans/2026-05-09-cli-agent-gateway-expansion-implementation-plan.md)
+**Predecessor design (claude-only v1):** [../../docs/plans/2026-05-08-agent-gateway-design.md](../../docs/plans/2026-05-08-agent-gateway-design.md)
+
+## Built-in profiles (v1)
+
+Drop a request with `model: <profile-name>` or `model: <profile>/<submodel>`:
+
+| Profile | Tier | Workspace | Auth pool | Submodels |
+|---|---|---|---|---|
+| `claude-cli` | first-class | worktree | `anthropic-oauth` | accept anything |
+| `codex-cli` | first-class | worktree | `openai-api-key` | gpt-4o / gpt-4o-mini / o1 / o1-mini / o3-mini |
+| `aider` | first-class | worktree | `aider-multi` | gpt-4o, claude-3-5-sonnet, gemini-2.5-flash, deepseek/deepseek-coder |
+| `gemini-cli` | supported | dir | `google-aistudio` | gemini-2.5-flash / -lite / -pro |
+| `grok-cli` | supported | dir | `xai-api-key` | grok-2 / -mini / grok-3 |
+| `llm` | supported | dir | `llm-multi` | any (no allowlist) |
+
+Drop YAML overrides into `${KR_AGENT_PROFILES_DIR}` (or `./agents/`) to add custom CLIs or override built-in defaults; fsnotify hot-reload picks them up within ~75 ms.
+
+## Architecture (one-liner per file)
+
+| File / dir | Purpose |
+|---|---|
+| `registry/` | profile schema, embedded built-ins, override loader, fsnotify watcher |
+| `accounts/` | universal account pool: round-robin, provider-aware cooldowns, env interpolation |
+| `workspace/` | per-request workspace lifecycle (worktree / dir / stateless) + startup sweeper |
+| `runner/` | generic CLI subprocess runner + per-profile output parsers (claude / codex / aider / generic) |
+| `agent_dispatch.go` | bridges runner events onto the existing `AgentEvent` channel |
+| `agent_chat.go` | OpenAI-shaped SSE + buffered emitters for the new path |
+| `agents_handlers.go` | `/v1/agents` CRUD, `/v1/accounts` extended, `/v1/accounts/test` |
 
 ## Build + run
 

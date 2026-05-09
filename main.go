@@ -57,6 +57,9 @@ func main() {
 		case "ingest", "graphify":
 			runGraphifyCmd(os.Args[2:])
 			return
+		case "agents":
+			runAgentsCmd(os.Args[2:])
+			return
 		case "serve":
 			// Explicit serve: strip the subcommand and fall through
 		}

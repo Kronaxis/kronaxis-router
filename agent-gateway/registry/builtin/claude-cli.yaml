@@ -1,0 +1,42 @@
+name: claude-cli
+display_name: "Claude Code"
+description: "Anthropic's agentic coding CLI with the full skills + MCP + hooks loop."
+tier: first-class
+cli:
+  command: "claude -p --output-format stream-json --include-partial-messages --no-session-persistence --verbose --permission-mode bypassPermissions"
+  input_mode: argv
+  exit_codes:
+    success: [0]
+    rate_limit: [429]
+    auth_failure: [401, 403]
+output:
+  format: stream-json
+  parser: claude
+workspace:
+  type: worktree-ephemeral
+submodel:
+  supports: true
+  default: ""
+  allowed: []
+auth:
+  pool: anthropic-oauth
+  injection: config-dir
+  env_vars:
+    CLAUDE_CONFIG_DIR: "{config_dir}"
+graphify:
+  default: "off"
+capabilities: [agentic, file-edit, tools, mcp, code]
+routing_default:
+  tier: 1
+  cost_class: premium
+flags_passthrough:
+  - system_prompt
+  - append_system_prompt
+  - agent
+  - effort
+  - allowed_tools
+  - disallowed_tools
+  - mcp_config
+  - add_dirs
+  - bare
+  - include_hook_events

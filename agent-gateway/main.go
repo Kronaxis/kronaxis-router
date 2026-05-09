@@ -9,8 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/kronaxis/agent-gateway/accounts"
+	"github.com/kronaxis/agent-gateway/registry"
 )
 
 func main() {
@@ -79,7 +83,51 @@ func main() {
 		})
 	}
 
-	srv := newServer(cfg, reg, logger, audit, pool, metrics, bus, authPool)
+	// Profile registry: load builtins + override directory.
+	profileReg := registry.New()
+	if err := profileReg.LoadBuiltins(); err != nil {
+		logger.Fatalf("load builtin profiles: %v", err)
+	}
+	profileDir := cfg.ProfileDir
+	if profileDir == "" {
+		// Default sibling of cfg dir; if cfg is "config.yaml" relative, this
+		// resolves to "./agents".
+		profileDir = filepath.Join(filepath.Dir(*configPath), "agents")
+	}
+	if err := profileReg.LoadOverrides(profileDir); err != nil {
+		logger.Printf("load override profiles from %s: %v", profileDir, err)
+	}
+	audit.Event("profile_registry_loaded", map[string]any{
+		"builtin_count":   len(profileReg.List()),
+		"override_dir":    profileDir,
+	})
+
+	// Universal account pool (separate file so legacy auth_pool.yaml stays
+	// intact). cfg.AccountsFile may be a single file or a directory.
+	accountMgr := accounts.New()
+	if err := accountMgr.Load(cfg.AccountsFile); err != nil {
+		logger.Fatalf("load accounts: %v", err)
+	}
+	audit.Event("accounts_loaded", map[string]any{
+		"file":  cfg.AccountsFile,
+		"pools": accountMgr.Pools(),
+	})
+
+	// Watch override directory for hot-reload.
+	if events, err := profileReg.Watch(rootCtx); err == nil && events != nil {
+		go func() {
+			for ev := range events {
+				if ev.Err != nil {
+					logger.Printf("profile watch err: %v", ev.Err)
+					continue
+				}
+				logger.Printf("profile %s: %s", ev.Type, ev.Name)
+				audit.Event("profile_"+string(ev.Type), map[string]any{"name": ev.Name})
+			}
+		}()
+	}
+
+	srv := newServer(cfg, reg, logger, audit, pool, metrics, bus, authPool, profileReg, accountMgr, profileDir)
 
 	startWorkspaceSweeper(rootCtx, cfg.WorkspaceRoot,
 		time.Duration(cfg.WorkspaceMaxAgeHours)*time.Hour,

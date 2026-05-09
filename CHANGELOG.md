@@ -2,7 +2,28 @@
 
 All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] -- 2026-05-08
+## [Unreleased] -- 2026-05-09
+
+### Added: CLI-Agent Gateway expansion (framework + tiered registry)
+
+The agent-gateway sub-service has graduated from a Claude-Code-specific wrapper into a framework that exposes any genuine TUI agent CLI behind a single OpenAI-compatible endpoint.
+
+- **Tiered registry** of profiles. Built-in defaults shipped: `claude-cli`, `codex-cli`, `aider` (first-class, deep stream parsers) plus `gemini-cli`, `grok-cli`, `llm` (supported, generic stdout streamer). User overrides drop into `agent-gateway/agents/<name>.yaml` and hot-reload via fsnotify.
+- **Universal account pool** generalised from the previous Anthropic-only pool. Pool config in `accounts.yaml`; provider-aware cooldowns; round-robin checkout; concurrent-safe leases. Env interpolation via `${VAR}` resolves at checkout time.
+- **Profile-declared workspace** lifecycle: `worktree-ephemeral` (default for file-editing agents), `dir-ephemeral` (chat-class CLIs), `stateless`. Per-request `X-Kronaxis-Workspace` override available.
+- **Submodel surface**: `model: <agent>/<submodel>` is parsed, validated against the profile's `submodel.allowed` allowlist, and substituted into the CLI's `--model` flag (or env, per profile). Profiles with `supports: false` reject submodel-suffixed requests with a clear 400.
+- **Profile-declared graphify default**: agentic file-editing CLIs default to `off` (they manage their own context); chat-class CLIs default to `compress`. Per-request `X-Kronaxis-Graphify` header overrides.
+- **Rule synthesis**: `kronaxis-router agents register <name>` writes a backend stanza pointing at the gateway and appends the agent to the matching tier rule (creates `tier-<n>-auto` if absent). Idempotent re-registration. Capability tags stashed as backend metadata for future capability-based rules.
+- **New API surface**: `GET/POST /v1/agents`, `GET/DELETE /v1/agents/<name>`, `POST /v1/accounts/test`, extended `GET /v1/accounts` enumerating all pools.
+- **CLI subcommand**: `kronaxis-router agents register|list|remove|test`.
+
+Code shape: 4 new packages in `agent-gateway/` (registry / accounts / workspace / runner) + 4 first-class output parsers + 6 builtin profile YAMLs embedded via `embed.FS` + the new dispatch path in `server.go`. Router-side: `synth.go` (idempotent YAML mutation that preserves comments and unrelated keys) + `agents_cmd.go`. Test coverage: 50+ unit tests across the new packages, all running under `go test -race`.
+
+### Changed: BSL 1.1 licence
+
+The repository was relicensed from Apache 2.0 to the Business Source License 1.1, with the Licensed Work converting back to Apache 2.0 on 9 May 2031 (the Change Date). Source-available with a non-commercial Additional Use Grant; commercial production use before the Change Date requires a separate licence. See `LICENSE`.
+
+## [Previously] -- 2026-05-08
 
 ### Added: graphify pre-stage
 

@@ -1,0 +1,37 @@
+name: aider
+display_name: "Aider"
+description: "Open-source AI pair-programmer that edits files in your local repo."
+tier: first-class
+cli:
+  command: "aider --model {model} --no-pretty --no-stream --yes-always --message -"
+  input_mode: stdin
+  exit_codes:
+    success: [0]
+    rate_limit: [429]
+    auth_failure: [401, 403]
+output:
+  format: jsonl
+  parser: aider
+workspace:
+  type: worktree-ephemeral
+submodel:
+  supports: true
+  default: gpt-4o-mini
+  allowed:
+    - gpt-4o
+    - gpt-4o-mini
+    - claude-3-5-sonnet
+    - claude-3-5-haiku
+    - deepseek/deepseek-coder
+    - gemini/gemini-2.5-flash
+auth:
+  pool: aider-multi
+  injection: env
+  env_vars:
+    OPENAI_API_KEY: "{credential}"
+graphify:
+  default: "off"
+capabilities: [agentic, file-edit, code]
+routing_default:
+  tier: 2
+  cost_class: standard

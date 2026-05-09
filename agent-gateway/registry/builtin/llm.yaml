@@ -1,0 +1,27 @@
+name: llm
+display_name: "Datasette llm"
+description: "Simon Willison's llm CLI: a multi-provider chat REPL with plugins."
+tier: supported
+cli:
+  command: "llm -m {model}"
+  input_mode: stdin
+output:
+  format: plain
+  parser: generic
+workspace:
+  type: dir-ephemeral
+submodel:
+  supports: true
+  default: gpt-4o-mini
+  allowed: []
+auth:
+  pool: llm-multi
+  injection: env
+  env_vars:
+    OPENAI_API_KEY: "{credential}"
+graphify:
+  default: compress
+capabilities: [code]
+routing_default:
+  tier: 3
+  cost_class: cheap

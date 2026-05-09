@@ -16,30 +16,42 @@ import (
 )
 
 type Server struct {
-	cfg      *Config
-	registry *Registry
-	sem      chan struct{}
-	logger   *log.Logger
-	audit    AuditLogger
-	pool     *WarmPool
-	metrics  *Metrics
-	wsStore  *WorkspaceStore
-	liveBus  *liveBus
-	auth     *AuthPool
+	cfg        *Config
+	registry   *Registry
+	sem        chan struct{}
+	logger     *log.Logger
+	audit      AuditLogger
+	pool       *WarmPool
+	metrics    *Metrics
+	wsStore    *WorkspaceStore
+	liveBus    *liveBus
+	auth       *AuthPool
+	profileReg *registryDeps
+	accountMgr *accountsDeps
+	profileDir string
 }
 
-func newServer(cfg *Config, reg *Registry, logger *log.Logger, audit AuditLogger, pool *WarmPool, metrics *Metrics, bus *liveBus, auth *AuthPool) *Server {
+// registryDeps and accountsDeps are aliases re-declared in deps.go so the
+// server.go file doesn't have to import the new sub-packages directly.
+// Keeps the diff to server.go minimal.
+//
+// The actual type definitions live in deps.go.
+
+func newServer(cfg *Config, reg *Registry, logger *log.Logger, audit AuditLogger, pool *WarmPool, metrics *Metrics, bus *liveBus, auth *AuthPool, profileReg *registryDeps, accountMgr *accountsDeps, profileDir string) *Server {
 	return &Server{
-		cfg:      cfg,
-		registry: reg,
-		sem:      make(chan struct{}, cfg.MaxConcurrent),
-		logger:   logger,
-		audit:    audit,
-		pool:     pool,
-		metrics:  metrics,
-		wsStore:  newWorkspaceStore(),
-		liveBus:  bus,
-		auth:     auth,
+		cfg:        cfg,
+		registry:   reg,
+		sem:        make(chan struct{}, cfg.MaxConcurrent),
+		logger:     logger,
+		audit:      audit,
+		pool:       pool,
+		metrics:    metrics,
+		wsStore:    newWorkspaceStore(),
+		liveBus:    bus,
+		auth:       auth,
+		profileReg: profileReg,
+		accountMgr: accountMgr,
+		profileDir: profileDir,
 	}
 }
 
@@ -49,7 +61,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/v1/workspaces/", s.handleWorkspaceItem)
-	mux.HandleFunc("/v1/accounts", s.handleAccounts)
+	mux.HandleFunc("/v1/accounts", s.handleAccountsV2)
+	mux.HandleFunc("/v1/accounts/legacy", s.handleAccounts)
+	mux.HandleFunc("/v1/accounts/test", s.handleAccountsTest)
+	mux.HandleFunc("/v1/agents", s.handleAgents)
+	mux.HandleFunc("/v1/agents/", s.handleAgentItem)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.Handle("/metrics", s.metrics.Handler())
 	mux.HandleFunc("/api/live", s.handleLive)
@@ -85,8 +101,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	resp := ModelsResponse{Object: "list", Data: s.registry.Models()}
-	_ = json.NewEncoder(w).Encode(resp)
+	models := s.registry.Models()
+	// Enumerate registered profile-driven agents (and submodel combinations).
+	if s.profileReg != nil {
+		for _, p := range s.profileReg.List() {
+			models = append(models, ModelInfo{
+				ID: p.Name, Object: "model", OwnedBy: "kronaxis", Available: true, Adapter: string(p.Tier),
+			})
+			if p.Submodel.Supports {
+				for _, sm := range p.Submodel.Allowed {
+					models = append(models, ModelInfo{
+						ID: p.Name + "/" + sm, Object: "model", OwnedBy: "kronaxis", Available: true, Adapter: string(p.Tier),
+					})
+				}
+			}
+		}
+	}
+	_ = json.NewEncoder(w).Encode(ModelsResponse{Object: "list", Data: models})
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +152,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	req.Model = baseModel
 	if skillFromModel != "" && req.Skill == "" {
 		req.Skill = skillFromModel
+	}
+
+	// New profile-driven dispatch: if the model resolves to a registered
+	// profile (or "<profile>/<submodel>"), short-circuit the legacy adapter
+	// path entirely. Falls through to the legacy registry on no match.
+	if s.profileReg != nil {
+		profileName, _ := splitAgentSubmodel(req.Model)
+		if _, ok := s.profileReg.Get(profileName); ok {
+			s.handleProfileChat(w, r, &req, requestID, startTime, &rec)
+			return
+		}
 	}
 
 	adapter := s.registry.Resolve(req.Model)

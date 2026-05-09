@@ -1,0 +1,30 @@
+name: gemini-cli
+display_name: "Google Gemini CLI"
+description: "Google's terminal agent for Gemini models."
+tier: supported
+cli:
+  command: "gemini chat --model {model}"
+  input_mode: stdin
+output:
+  format: plain
+  parser: generic
+workspace:
+  type: dir-ephemeral
+submodel:
+  supports: true
+  default: gemini-2.5-flash
+  allowed:
+    - gemini-2.5-flash
+    - gemini-2.5-flash-lite
+    - gemini-2.5-pro
+auth:
+  pool: google-aistudio
+  injection: env
+  env_vars:
+    GEMINI_API_KEY: "{credential}"
+graphify:
+  default: compress
+capabilities: [agentic, code]
+routing_default:
+  tier: 2
+  cost_class: standard

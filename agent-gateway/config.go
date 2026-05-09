@@ -25,6 +25,8 @@ type Config struct {
 	AnthropicBaseURL     string `yaml:"anthropic_base_url"`
 	AnthropicAPIKeyEnv   string `yaml:"anthropic_api_key_env"`
 	AuthPoolFile         string `yaml:"auth_pool_file"`
+	AccountsFile         string `yaml:"accounts_file"`
+	ProfileDir           string `yaml:"profile_dir"`
 }
 
 func loadConfig(path string) (*Config, error) {

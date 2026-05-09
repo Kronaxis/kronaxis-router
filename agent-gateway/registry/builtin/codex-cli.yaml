@@ -1,0 +1,31 @@
+name: codex-cli
+display_name: "OpenAI Codex CLI"
+description: "OpenAI's coding agent CLI."
+tier: first-class
+cli:
+  command: "codex --model {model} --json"
+  input_mode: stdin
+  exit_codes:
+    success: [0]
+    rate_limit: [429]
+    auth_failure: [401, 403]
+output:
+  format: stream-json
+  parser: codex
+workspace:
+  type: worktree-ephemeral
+submodel:
+  supports: true
+  default: gpt-4o-mini
+  allowed: [gpt-4o, gpt-4o-mini, o1, o1-mini, o3-mini]
+auth:
+  pool: openai-api-key
+  injection: env
+  env_vars:
+    OPENAI_API_KEY: "{credential}"
+graphify:
+  default: "off"
+capabilities: [agentic, file-edit, tools, code]
+routing_default:
+  tier: 1
+  cost_class: premium
