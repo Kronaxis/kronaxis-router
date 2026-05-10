@@ -2,7 +2,72 @@
 
 All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] -- 2026-05-09
+## [v0.3.0] -- 2026-05-10
+
+Phase 1 to 3 roadmap items shipped. The router moves from sovereign tier routing proxy to full LLM control plane.
+
+### Added: KV cache aware routing (Phase 1)
+
+Radix tree per backend keyed on chunked prefix hashes. Routes preferentially to the backend whose tree has the deepest matching prefix (vLLM KV cache is presumed warm there). Falls through to least connections plus round robin when no candidate has a matching prefix. Atomic `lastSeen` for race free concurrent walks; 5 minute sweeper evicts stale subtrees; per tree node cap (default 10,000).
+
+Config (per backend, opt in):
+
+```yaml
+backends:
+  - name: vllm-node-1
+    kv_pinning:
+      enabled: true
+      max_prefix_age_seconds: 600
+      hash_chunk_tokens: 128
+      max_nodes: 10000
+```
+
+Endpoint: `GET /api/kv-trees` returns per backend node count and max age.
+
+### Added: Stateful sessions (Phase 1)
+
+Server stored conversation transcripts. Client uploads the full messages array once via `X-Kronaxis-Session-Create: true`, gets back `X-Kronaxis-Session-ID: sess_...`, then sends only the new turn on subsequent calls. Postgres `kr_sessions` table auto created in `runMigrations`. TTL sweeper evicts idle sessions every 5 minutes; in memory hot cache absorbs consecutive turn bursts. Endpoints: `GET /v1/sessions`, `GET /v1/sessions/<id>`, `DELETE /v1/sessions/<id>`. Override TTL via `X-Kronaxis-Session-TTL: <seconds>`.
+
+### Added: Anthropic cache breakpoint injection
+
+When `BackendConfig.CacheBreakpoints: true`, the proxy injects `cache_control: {"type": "ephemeral"}` markers on the stable prefix (last system message plus last assistant message) before forwarding. Compounds with sessions: sessions store transcript on the gateway, breakpoints make the provider's own cache hit on the same prefix every turn. Off by default; only enable for Anthropic native or OpenRouter style backends.
+
+### Added: Schema validated quality gates (Phase 2)
+
+JSON schema validation on the cheap tier's output via `santhosh-tekuri/jsonschema/v5`. FNV keyed compile cache so subsequent validations skip the parse cost. On violation, transparently retries the request on the next backend in the chain. Compiled schemas bounded at 1024 entries with random eviction.
+
+### Added: DPO export to JSONL (Phase 2)
+
+Every quality gate fallback (cheap output rejected, expensive output chosen) emits a Direct Preference Optimisation training pair to a JSONL file. Non blocking buffered writer with a single drainer goroutine; redaction of named keys (default `api_key`, `password`); milestone audit logs every N pairs. Enable via `DPO_EXPORT_PATH` env var. Endpoint: `GET /api/dpo`.
+
+### Added: Cost forecasting and shadow routing (Phase 3)
+
+Cost forecaster does linear extrapolation from spent so far plus hours elapsed today; surfaces budget exhaustion ETA per service. Shadow router mirrors a configurable percentage of primary requests to a shadow backend in a goroutine, computes Jaccard word similarity, persists comparisons as JSONL. Primary request path untouched and never affected by shadow latency or errors. Endpoints: `GET /api/costs/forecast`, `GET /api/shadow/stats`.
+
+### Added: Cost Lab UI
+
+Single page dashboard at `/cost-lab`. Vanilla JS, dark theme, four tabs (Today / Forecast / Shadow / DPO). Auto refreshes every 10 seconds, hits the existing `/api/costs`, `/api/backends`, `/api/costs/forecast`, `/api/shadow/stats`, `/api/dpo` endpoints. Linked from the main UI nav at `/`.
+
+### Added: Release engineering
+
+- Static distroless Docker image at `agent-gateway/Dockerfile` (~26 MB)
+- Full image at `Dockerfile.full` (debian:12 plus git plus tini) for worktree profiles
+- Goreleaser produces deb, rpm, tar.gz, zip across linux/darwin/windows times amd64/arm64
+- Homebrew tap formula hand committed via `scripts/publish-homebrew-formula.sh` post tag
+- Goreleaser `brews:` section removed (was requiring HOMEBREW_TAP_TOKEN secret)
+
+### Fixed
+
+- `TestMCPToolCallHealthNoRouter` now uses an ephemeral port via `net.Listen("tcp", "127.0.0.1:0")` instead of a hard coded 19999; no longer flakes on hosts where 19999 is in use.
+- Two real concurrency bugs from earlier deep testing:
+  - YAML write race in `agent-gateway` profile registration (concurrent POSTs to same name caused HTTP 500 in roughly 1 of 10 tries; fixed with per request `os.CreateTemp` tmp files)
+  - Subprocess cancellation leaked grandchildren (`exec.CommandContext` killed direct child only; fixed with `Setpgid` plus `syscall.Kill(-pgid, SIGKILL)` per OS via build tags)
+
+### Test coverage
+
+55+ unit tests added covering KV pinning, sessions, schema gates, DPO export, shadow routing, Jaccard similarity, Anthropic cache breakpoint injection. All pass under `go test -race ./...`.
+
+## [v0.2.0] -- 2026-05-09
 
 ### Added: CLI-Agent Gateway expansion (framework + tiered registry)
 

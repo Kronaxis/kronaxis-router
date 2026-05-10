@@ -1,0 +1,155 @@
+{
+  "_comment": "Kronaxis Router public Cost Lab dashboard template. Import into Grafana via Dashboard > Import > paste JSON. Expects a Prometheus datasource named PROMETHEUS scraping kronaxis-router's /metrics endpoint. Edit the datasource name on import to match your environment.",
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["kronaxis", "router", "cost-lab", "public"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Kronaxis Router — Cost Lab (public)",
+  "uid": "kronaxis-router-cost-lab-public",
+  "version": 1,
+  "weekStart": "",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Requests Routed (cumulative)",
+      "type": "stat",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "kronaxis_router_requests_total", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" } } },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 2,
+      "title": "Routing Decision Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(kronaxis_router_routing_decision_seconds_bucket[5m]))", "refId": "A", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(kronaxis_router_routing_decision_seconds_bucket[5m]))", "refId": "B", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(kronaxis_router_routing_decision_seconds_bucket[5m]))", "refId": "C", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 3,
+      "title": "Spend Today vs Frontier-only Counterfactual",
+      "type": "bargauge",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        { "expr": "kronaxis_router_cost_actual_today_gbp", "refId": "A", "legendFormat": "Actual" },
+        { "expr": "kronaxis_router_cost_counterfactual_frontier_today_gbp", "refId": "B", "legendFormat": "Frontier-only" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyGBP" } }
+    },
+    {
+      "id": 4,
+      "title": "Tier Distribution (24h rolling)",
+      "type": "piechart",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum(increase(kronaxis_router_requests_total{tier=\"1\"}[24h]))", "refId": "A", "legendFormat": "T1 sovereign" },
+        { "expr": "sum(increase(kronaxis_router_requests_total{tier=\"2\"}[24h]))", "refId": "B", "legendFormat": "T2 mid-tier" },
+        { "expr": "sum(increase(kronaxis_router_requests_total{tier=\"3\"}[24h]))", "refId": "C", "legendFormat": "T3 frontier" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "donut" }
+    },
+    {
+      "id": 5,
+      "title": "Cache Hit Rate (24h)",
+      "type": "gauge",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "rate(kronaxis_router_cache_hits_total[24h]) / clamp_min(rate(kronaxis_router_cache_lookups_total[24h]), 1)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "orange", "value": 0.1 },
+            { "color": "green", "value": 0.25 }
+          ] }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Account Pool — Active vs Cooldown",
+      "type": "stat",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "kronaxis_router_pool_active_count by (pool)", "refId": "A", "legendFormat": "{{pool}} active" },
+        { "expr": "kronaxis_router_pool_cooldown_count by (pool)", "refId": "B", "legendFormat": "{{pool}} cooldown" }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" }
+    },
+    {
+      "id": 7,
+      "title": "Graphify Token Savings (rolling)",
+      "type": "timeseries",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "rate(kronaxis_router_graphify_tokens_saved_total[5m])", "refId": "A", "legendFormat": "tokens saved/sec" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 8,
+      "title": "Backends — Latency Heatmap",
+      "type": "heatmap",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(increase(kronaxis_router_backend_latency_seconds_bucket[1m])) by (le, backend)", "refId": "A", "format": "heatmap" }
+      ],
+      "options": { "calculate": true, "yAxis": { "axisLabel": "latency" } }
+    },
+    {
+      "id": 9,
+      "title": "KV Cache Prefix Trees — Node Counts per Backend",
+      "type": "table",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "kronaxis_router_kv_tree_node_count", "refId": "A", "instant": true, "format": "table" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Stateful Sessions — Active",
+      "type": "stat",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 22 },
+      "targets": [
+        { "expr": "kronaxis_router_sessions_active", "refId": "A" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "DPO Pairs Written",
+      "type": "stat",
+      "datasource": "PROMETHEUS",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 22 },
+      "targets": [
+        { "expr": "kronaxis_router_dpo_pairs_written_total", "refId": "A" }
+      ]
+    }
+  ]
+}

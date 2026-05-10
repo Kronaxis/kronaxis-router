@@ -22,6 +22,18 @@ Kronaxis Router is a production-grade LLM proxy (~9,000 lines of Go) that routes
 - Embedded web UI (dashboard, flow builder, backend manager, cost analysis)
 - Hot-reloadable config, single binary, 2.1 MB memory under load
 
+### Added 2026-05-10: v0.3.0 release (see CHANGELOG)
+
+- **KV cache aware routing (Phase 1)**: radix tree per backend keyed on chunked prefix hashes; biases routing toward whichever backend has a deep prefix match (vLLM KV is presumed warm there). Atomic lastSeen for race free concurrent walks. Endpoint `GET /api/kv-trees`.
+- **Stateful sessions (Phase 1)**: `kr_sessions` Postgres table; client uploads full transcript once via `X-Kronaxis-Session-Create: true`, then sends only new turns via `X-Kronaxis-Session-ID: <id>`. TTL sweeper, 30 second hot cache. Endpoints `GET/DELETE /v1/sessions[/<id>]`.
+- **Anthropic cache breakpoint injection**: opt in per backend via `cache_breakpoints: true`. Injects `cache_control: {"type": "ephemeral"}` markers on the stable prefix; stacks multiplicatively with sessions.
+- **Schema validated quality gates (Phase 2)**: santhosh-tekuri/jsonschema/v5 with FNV keyed compile cache; silent retry on next backend on violation.
+- **DPO export to JSONL (Phase 2)**: non blocking buffered writer with key redaction and milestone audit logs. Enabled via `DPO_EXPORT_PATH` env var. Endpoint `GET /api/dpo`.
+- **Cost forecast and shadow routing (Phase 3)**: linear extrapolation per service with budget ETA; goroutine fired shadow comparison with Jaccard similarity scoring. Endpoints `GET /api/costs/forecast`, `GET /api/shadow/stats`.
+- **Cost Lab UI** at `/cost-lab`: single page dashboard, four tabs (Today / Forecast / Shadow / DPO), auto refresh every 10 s, linked from the main UI nav.
+- **Release engineering**: Docker images (static distroless 26 MB + full image), Goreleaser produces deb / rpm / tar.gz / zip across linux/darwin/windows x amd64/arm64, Homebrew tap formula hand committed via `scripts/publish-homebrew-formula.sh`.
+- **55+ tests** added covering KV pinning, sessions, schema gates, DPO export, shadow routing, Jaccard similarity, cache breakpoint injection; all green under `go test -race ./...`.
+
 ### Added 2026-05-09 (see CHANGELOG)
 
 - **CLI-Agent Gateway expansion (the framework)** -- `agent-gateway/` (port 8055) graduated from a Claude-Code-specific wrapper into a tiered-registry framework that exposes any genuine TUI agent CLI behind a single OpenAI-compatible endpoint. Six built-in profiles: `claude-cli`, `codex-cli`, `aider` (first-class, deep stream parsers) plus `gemini-cli`, `grok-cli`, `llm` (supported, generic streamer). Universal account pool generalised from the previous Anthropic-only pool with provider-aware cooldowns. Profile-declared workspace lifecycle (worktree-ephemeral / dir-ephemeral / stateless). Submodel surface (`model: <agent>/<submodel>` parsed and validated against profile allowlist). Profile-declared graphify default. New API: `GET/POST /v1/agents`, `GET/DELETE /v1/agents/<name>`, `POST /v1/accounts/test`, extended `GET /v1/accounts`. New CLI: `kronaxis-router agents register|list|sync|remove|test`. New router endpoint: `GET /api/agents`. Idempotent rule synthesis writer (`synth.go`) preserves comments + unrelated keys. 50+ tests pass under `go test -race`.
@@ -37,7 +49,7 @@ Kronaxis Router is a production-grade LLM proxy (~9,000 lines of Go) that routes
 
 These features make Kronaxis the best router for anyone running multiple vLLM instances. They compound on each other and require no new dependencies.
 
-### KV Cache-Aware Routing (Radix Tree Pinning)
+### KV Cache-Aware Routing (Radix Tree Pinning) — shipped in v0.3.0
 
 **Problem:** Round-robin routing across a vLLM cluster forces each node to recompute the KV cache for multi-turn conversations. A 100k-token system prompt gets reprocessed on every turn if the request lands on a different node.
 
@@ -63,7 +75,7 @@ server:
   queue_scrape_interval: 5s           # How often to read /metrics
 ```
 
-### Stateful Session Management
+### Stateful Session Management — shipped in v0.3.0
 
 **Problem:** Agentic workflows (Claude Code, Cursor, custom agents) re-upload the entire conversation context with every HTTP request. A 100k-token system prompt gets sent 50 times during a coding session. This wastes bandwidth, increases latency, and costs money on metered APIs.
 
@@ -86,7 +98,7 @@ This also unlocks provider-side cache optimisation: because Kronaxis controls th
 
 ## Phase 2: Production safety
 
-### Schema-Validated Quality Gates
+### Schema-Validated Quality Gates — shipped in v0.3.0
 
 **Problem:** The "cheap model first" strategy saves money but breaks production when the cheap model hallucinates invalid JSON. The existing quality gate validates by comparing token overlap against a reference model. That catches gross quality degradation but not structural failures.
 
@@ -115,7 +127,7 @@ backends:
       recovery_probe_interval: 15s # How often to test recovery
 ```
 
-### DPO Dataset Export (Self-Teaching Flywheel)
+### DPO Dataset Export (Self-Teaching Flywheel) — shipped in v0.3.0
 
 **Problem:** Fine-tuning data for local models is expensive to create manually.
 
@@ -133,7 +145,7 @@ The router's job is to emit the dataset. Training is handled by your existing fi
 
 ## Phase 3: Operational intelligence
 
-### Shadow Routing (Migration Testing)
+### Shadow Routing (Migration Testing) — shipped in v0.3.0
 
 **Problem:** Switching from GPT-4o to Gemini Flash could save 80%, but how do you prove quality is comparable before committing?
 
@@ -149,7 +161,7 @@ ab_tests:
     mode: shadow                     # Don't return shadow responses
 ```
 
-### Cost Forecasting
+### Cost Forecasting — shipped in v0.3.0
 
 **Problem:** Budget enforcement catches you at the limit. By then it's too late to adjust.
 

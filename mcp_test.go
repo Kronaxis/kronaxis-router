@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -109,9 +110,18 @@ func TestMCPToolCallUnknown(t *testing.T) {
 }
 
 func TestMCPToolCallHealthNoRouter(t *testing.T) {
-	// Calling health with no router running should return a graceful error
+	// Calling health with no router running should return a graceful error.
+	// Use a fresh ephemeral port we just released (Listen + Close) so we
+	// know nothing is bound there. Hard coding a port (e.g. 19999) makes
+	// the test fail on hosts where that port happens to be in use.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
 	srv := &MCPServer{
-		routerURL:  "http://localhost:19999", // unlikely to be running
+		routerURL:  "http://" + addr,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 	}
 	id := json.RawMessage(`4`)
