@@ -80,24 +80,14 @@ release:
     go install github.com/kronaxis/kronaxis-router@v{{.Version}}
     ```
 
-brews:
-  - name: kronaxis-router
-    repository:
-      owner: Kronaxis
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/Kronaxis/kronaxis-router"
-    description: "Intelligent LLM proxy with cost-optimised routing"
-    license: "BUSL-1.1"
-    skip_upload: auto
-    install: |
-      bin.install "kronaxis-router"
-    test: |
-      system "#{bin}/kronaxis-router", "version"
-    dependencies:
-      - name: go
-        type: optional
+# Homebrew formula is hand committed to Kronaxis/homebrew-tap via the
+# GitHub Contents API after each release tag. See the post-release
+# script in scripts/publish-homebrew-formula.sh. Avoids needing a
+# HOMEBREW_TAP_TOKEN secret on this repo and keeps the release workflow
+# fully green on each tag.
+#
+# brews: section removed deliberately; restore + add the token if you
+# prefer goreleaser handles the formula push.
 
 nfpms:
   - id: packages
