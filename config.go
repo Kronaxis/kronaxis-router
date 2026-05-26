@@ -45,6 +45,47 @@ type GraphifyConfig struct {
 	AutoAugmentMaxChars int                    `yaml:"auto_augment_max_chars"`
 	ServiceOverrides    map[string]string      `yaml:"service_overrides"`     // X-Kronaxis-Service -> mode
 	Embedder            GraphifyEmbedderConfig `yaml:"embedder"`
+
+	// ----- Kronaxis Platform integration (Router <-> Fabric) -----
+	// When FabricURL is set, the graphify pre-stage delegates retrieval
+	// to Fabric's /v1/rag endpoint instead of running embedded pgvector +
+	// the local embedder. If unset, embedded behaviour is unchanged so
+	// single-box deployments keep working.
+	//
+	// On any error talking to Fabric we log and fall back to embedded
+	// retrieval; we never fail a chat request because Fabric is sad.
+	FabricURL        string            `yaml:"fabric_url"`
+	FabricKey        string            `yaml:"fabric_key"`         // Bearer token (or env:VAR_NAME)
+	FabricRAGWeights *FabricRAGWeights `yaml:"fabric_rag_weights"` // optional override; default pure-cosine
+	FabricTimeoutMS  int               `yaml:"fabric_timeout_ms"`  // default 5000
+}
+
+// FabricRAGWeights mirrors the weights block sent on /v1/rag. Pointer
+// type on the parent so the YAML loader can distinguish "field unset"
+// from "field explicitly set with zeros".
+type FabricRAGWeights struct {
+	Cosine   float64 `yaml:"cosine" json:"cosine"`
+	TSVector float64 `yaml:"tsvector" json:"tsvector"`
+	Recency  float64 `yaml:"recency" json:"recency"`
+}
+
+// EffectiveFabricWeights returns the ranking weights to send to Fabric
+// /v1/rag. When the operator didn't set fabric_rag_weights at all we
+// default to pure cosine -- Router asks Fabric for code-chunk relevance,
+// and Fabric's memo-search default of cosine 0.5 + tsvector 0.3 +
+// recency 0.2 is the wrong blend for that workload.
+func (g GraphifyConfig) EffectiveFabricWeights() FabricRAGWeights {
+	if g.FabricRAGWeights == nil {
+		return FabricRAGWeights{Cosine: 1.0, TSVector: 0.0, Recency: 0.0}
+	}
+	return *g.FabricRAGWeights
+}
+
+// FabricEnabled reports whether Router should delegate to Fabric for
+// this graphify call. The middleware should fall back to embedded
+// retrieval if this returns false OR if a Fabric call fails.
+func (g GraphifyConfig) FabricEnabled() bool {
+	return strings.TrimSpace(g.FabricURL) != ""
 }
 
 // EffectiveMinCosineSim returns the float to pass to the retriever:
@@ -102,6 +143,12 @@ func (g GraphifyConfig) WithDefaults() GraphifyConfig {
 	if g.ServiceOverrides == nil {
 		g.ServiceOverrides = map[string]string{}
 	}
+	if g.FabricTimeoutMS <= 0 {
+		g.FabricTimeoutMS = 5000
+	}
+	// Allow env:VAR_NAME for the bearer token.
+	g.FabricKey = resolveEnv(g.FabricKey)
+	g.FabricURL = strings.TrimRight(strings.TrimSpace(g.FabricURL), "/")
 	return g
 }
 

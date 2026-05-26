@@ -1,0 +1,66 @@
+# Kronaxis Platform integration: Router delegates its RAG pre-stage to
+# Fabric instead of running embedded pgvector + sentence-transformers.
+#
+# Architecture:
+#
+#   request ──▶ cache check ──▶ GRAPHIFY (compress/augment)
+#                                  │
+#                                  ▼ POST <fabric_url>/v1/rag
+#                                  │   Authorization: Bearer <fabric_key>
+#                                  │
+#                              fabric.chunks (pgvector + tsvector + recency)
+#
+# When fabric_url is set the embedded retriever is bypassed entirely
+# (but kept as a fallback: if Fabric returns an error the middleware
+# falls through to the embedded path, so a flaky Fabric host never
+# fails a chat request).
+#
+# Prereqs:
+#   - A reachable Fabric host (e.g. http://fabric-host:8201)
+#   - A valid Fabric bearer token in env FABRIC_KEY
+#   - Optional: a Postgres + embedding-service set up the embedded way
+#     too, if you want fallback retrieval. Pure fabric-only mode is
+#     also supported -- set fabric_url and leave DATABASE_URL unset.
+#
+# Run:
+#   FABRIC_KEY=test-key-1 kronaxis-router serve --config examples/fabric-integration.yaml
+
+server:
+  port: 8050
+  health_check_interval: 30s
+  default_timeout: 60s
+
+backends:
+  - name: local-vllm
+    url: "http://localhost:8000"
+    type: vllm
+    model_name: "default"
+    cost_input_1m: 0.01
+    cost_output_1m: 0.01
+    capabilities: [json_output]
+    max_concurrent: 4
+    health_endpoint: "/v1/models"
+
+rules:
+  - name: default
+    priority: 100
+    match: {}
+    backends: [local-vllm]
+
+defaults:
+  fallback_chain: [local-vllm]
+  default_timeout_ms: 60000
+
+graphify:
+  enabled: true
+  default: "augment"
+  top_k: 8
+
+  # Kronaxis Platform integration: delegate to Fabric.
+  fabric_url: "http://fabric-host:8201"
+  fabric_key: "env:FABRIC_KEY"
+  fabric_timeout_ms: 5000
+  fabric_rag_weights:
+    cosine: 1.0
+    tsvector: 0.0
+    recency: 0.0

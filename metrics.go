@@ -137,6 +137,8 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// Graphify pre-stage metrics
 	fmt.Fprint(w, graphifyMetricsLines())
+	// Fabric-delegate metrics (Kronaxis Platform integration)
+	fmt.Fprint(w, fabricMetricsLines())
 
 	// Cache metrics
 	fmt.Fprintln(w, "# HELP kronaxis_router_cache_hits_total Cache hits.")

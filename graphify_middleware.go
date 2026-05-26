@@ -40,7 +40,10 @@ var (
 
 func newGraphifyMiddleware(cfg GraphifyConfig, emb Embedder) *GraphifyMiddleware {
 	m := &GraphifyMiddleware{cfg: cfg, emb: emb}
-	m.enabled.Store(cfg.Enabled && emb != nil)
+	// Enabled when: feature is on AND we have some retrieval backend.
+	// Either the embedded path (emb != nil + db) OR the fabric path
+	// (fabric_url set) satisfies "some retrieval backend".
+	m.enabled.Store(cfg.Enabled && (emb != nil || cfg.FabricEnabled()))
 	return m
 }
 
@@ -52,7 +55,12 @@ func (m *GraphifyMiddleware) Enabled() bool {
 // (mode, retrievedCount, tokensSaved, error). If error is non-nil, the request
 // is left unchanged.
 func (m *GraphifyMiddleware) Preprocess(ctx context.Context, req *ChatRequest, r *http.Request) (string, int, int, error) {
-	if !m.Enabled() || db == nil {
+	if !m.Enabled() {
+		return "off", 0, 0, nil
+	}
+	// Embedded path needs db; fabric path doesn't. Bail only if neither
+	// backend is available.
+	if db == nil && !m.cfg.FabricEnabled() {
 		return "off", 0, 0, nil
 	}
 	graphifyRequestsTotal.Add(1)
@@ -116,7 +124,7 @@ func (m *GraphifyMiddleware) augment(ctx context.Context, req *ChatRequest) (str
 	if queryText == "" {
 		return "off", 0, 0, nil
 	}
-	results, err := graphifyRetrieve(ctx, db, m.emb, RetrieveOpts{
+	results, err := m.retrieve(ctx, RetrieveOpts{
 		Query:        queryText,
 		TopK:         m.cfg.TopK,
 		MinCosineSim: m.cfg.EffectiveMinCosineSim(),
@@ -168,7 +176,7 @@ func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest) (st
 		// Nothing to compress; fall through to augment so we still help.
 		return m.augment(ctx, req)
 	}
-	results, err := graphifyRetrieve(ctx, db, m.emb, RetrieveOpts{
+	results, err := m.retrieve(ctx, RetrieveOpts{
 		Query:        queryText,
 		TopK:         m.cfg.TopK,
 		MinCosineSim: m.cfg.EffectiveMinCosineSim(),
@@ -193,6 +201,29 @@ func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest) (st
 	graphifyChunksTotal.Add(uint64(len(results)))
 	graphifyTokensSavedTotal.Add(uint64(saved / 4)) // rough chars-to-tokens
 	return "compress", len(results), saved / 4, nil
+}
+
+// retrieve is the splice point for the Kronaxis Platform integration.
+// If fabric_url is configured we try Fabric first; on any error we fall
+// back to embedded graphify so a flaky Fabric host never fails a chat.
+// If fabric_url is unset we go straight to embedded behaviour, leaving
+// single-box deployments unchanged.
+func (m *GraphifyMiddleware) retrieve(ctx context.Context, opts RetrieveOpts) ([]RetrievalResult, error) {
+	if m.cfg.FabricEnabled() {
+		results, err := fabricRetrieve(ctx, m.cfg, opts)
+		if err == nil {
+			return results, nil
+		}
+		logger.Printf("graphify: fabric call failed (%v); falling back to embedded retrieval", err)
+		graphifyFabricFallbacksTotal.Add(1)
+		// fallthrough to embedded
+	}
+	// Embedded path requires db + emb to be present. If neither is up
+	// (test harnesses, fabric-only deployments), return empty cleanly.
+	if db == nil || m.emb == nil {
+		return nil, nil
+	}
+	return graphifyRetrieve(ctx, db, m.emb, opts)
 }
 
 func renderContext(results []RetrievalResult) string {

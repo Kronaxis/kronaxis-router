@@ -185,24 +185,30 @@ func runServer() {
 
 	// Graphify pre-stage: optional embedder + middleware. If embedder is
 	// configured but unreachable, log and continue (router still works).
+	//
+	// Kronaxis Platform integration: when graphify.fabric_url is set we
+	// can run in "fabric-only" mode -- no local embedder, no local
+	// kr_chunks table. Retrieval is delegated to the Fabric service.
 	gcfg := cfg.Graphify.WithDefaults()
 	cfg.Graphify = gcfg
-	if gcfg.Enabled && db != nil {
-		probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
-		emb, err := newEmbedder(probeCtx, gcfg.Embedder)
-		probeCancel()
-		if err != nil {
-			logger.Printf("graphify embedder unavailable: %v (graphify disabled)", err)
-		} else {
-			if err := graphifyEnsureSchema(ctx, db, emb.Dim()); err != nil {
-				logger.Printf("graphify schema bootstrap failed: %v (graphify disabled)", err)
+	if gcfg.Enabled {
+		var emb Embedder
+		// Probe local embedder + bootstrap embedded schema -- best-effort.
+		// We still build the middleware below even if these fail, so the
+		// fabric-only path stays operational.
+		if db != nil {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
+			e, err := newEmbedder(probeCtx, gcfg.Embedder)
+			probeCancel()
+			if err != nil {
+				logger.Printf("graphify embedder unavailable: %v (embedded retrieval disabled)", err)
+			} else if err := graphifyEnsureSchema(ctx, db, e.Dim()); err != nil {
+				logger.Printf("graphify schema bootstrap failed: %v (embedded retrieval disabled)", err)
 			} else {
-				graphifyEmbedder = emb
-				graphifyMW = newGraphifyMiddleware(gcfg, emb)
-				logger.Printf("graphify enabled: embedder=%s dim=%d default_mode=%s",
-					emb.Name(), emb.Dim(), gcfg.Default)
+				emb = e
+				graphifyEmbedder = e
 				if gcfg.WatchEnabled {
-					watcher := newGraphifyWatcher(db, emb, gcfg)
+					watcher := newGraphifyWatcher(db, e, gcfg)
 					go func() {
 						if err := watcher.Run(ctx); err != nil {
 							logger.Printf("graphify watcher exited: %v", err)
@@ -211,6 +217,26 @@ func runServer() {
 					logger.Printf("graphify watcher running on %d roots", len(gcfg.IngestRoots))
 				}
 			}
+		}
+		// Construct the middleware iff we have *some* retrieval backend.
+		if emb != nil || gcfg.FabricEnabled() {
+			graphifyMW = newGraphifyMiddleware(gcfg, emb)
+			mode := "embedded"
+			if gcfg.FabricEnabled() && emb == nil {
+				mode = "fabric-only"
+			} else if gcfg.FabricEnabled() {
+				mode = "fabric+embedded-fallback"
+			}
+			embName := "(none)"
+			embDim := 0
+			if emb != nil {
+				embName = emb.Name()
+				embDim = emb.Dim()
+			}
+			logger.Printf("graphify enabled: mode=%s embedder=%s dim=%d fabric_url=%q default=%s",
+				mode, embName, embDim, gcfg.FabricURL, gcfg.Default)
+		} else {
+			logger.Printf("graphify enabled in config but no retrieval backend available (no embedder, no fabric_url); disabled")
 		}
 	}
 

@@ -306,3 +306,26 @@ graphify:
     atlas: "auto"
     panel-studio: "augment"
     beacon: "off"
+
+  # ────────────────────────────────────────────────────────────────────
+  # KRONAXIS PLATFORM INTEGRATION (Router <-> Fabric)
+  # ────────────────────────────────────────────────────────────────────
+  # When fabric_url is set, the graphify pre-stage delegates retrieval
+  # to the Fabric service's /v1/rag endpoint instead of running the
+  # embedded pgvector + local sentence-transformers backend.
+  #
+  # If unset (the default), embedded behaviour is unchanged so single-
+  # box deployments keep working. On any error contacting Fabric we log
+  # and fall back to embedded retrieval -- a flaky Fabric host never
+  # fails a chat request.
+  #
+  # Default weights are pure cosine. Router asks Fabric for code-chunk
+  # relevance; Fabric's memo-search default of cosine 0.5 + tsvector
+  # 0.3 + recency 0.2 is the wrong blend for that workload.
+  fabric_url: ""                       # e.g. "http://fabric-host:8201"
+  fabric_key: ""                       # Bearer token (supports env:VAR_NAME)
+  fabric_timeout_ms: 5000              # cap per /v1/rag call
+  # fabric_rag_weights:                # optional; defaults to pure cosine
+  #   cosine: 1.0
+  #   tsvector: 0.0
+  #   recency: 0.0
