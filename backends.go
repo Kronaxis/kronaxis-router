@@ -41,8 +41,13 @@ type Backend struct {
 	// QueueDepth / ActiveInference are scraped from a vLLM backend's /metrics
 	// (vllm:num_requests_waiting / vllm:num_requests_running) by the
 	// QueueScraper when queue_aware_routing is enabled. Zero otherwise.
+	// QueueScraped is set once a scrape succeeds, so routing can tell a
+	// genuinely-idle vLLM node apart from a backend that is simply never
+	// scraped (non-vLLM, or an unreachable /metrics) — the latter must not be
+	// treated as load 0.
 	QueueDepth      atomic.Int64
 	ActiveInference atomic.Int64
+	QueueScraped    atomic.Bool
 	mu              sync.RWMutex
 }
 

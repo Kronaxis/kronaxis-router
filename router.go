@@ -212,10 +212,13 @@ func sameKVDepth(a, b RouteResult, prompt string) bool {
 // i.e. "route to the warmest cache, unless it's overloaded".
 var queueAwareRouting bool
 
-// backendLoad is the metric balancing minimises: scraped queue load when
-// queue-aware routing is on, otherwise the proxy's active-request count.
+// backendLoad is the metric balancing minimises: scraped inference-queue load
+// when queue-aware routing is on AND this backend has actually been scraped
+// (a vLLM node with a reachable /metrics); otherwise the proxy's own
+// active-request count. The scrape guard stops a non-vLLM or unreachable
+// backend from masquerading as permanently idle (load 0) on a mixed fleet.
 func backendLoad(b *Backend) int64 {
-	if queueAwareRouting {
+	if queueAwareRouting && b.QueueScraped.Load() {
 		return b.QueueLoad()
 	}
 	return b.ActiveReqs.Load()

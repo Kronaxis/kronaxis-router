@@ -51,6 +51,7 @@ func TestBackendLoadRespectsFlag(t *testing.T) {
 	b.ActiveReqs.Store(1)
 	b.QueueDepth.Store(10)
 	b.ActiveInference.Store(0)
+	b.QueueScraped.Store(true) // scraped vLLM node
 
 	queueAwareRouting = false
 	if got := backendLoad(b); got != 1 {
@@ -58,9 +59,22 @@ func TestBackendLoadRespectsFlag(t *testing.T) {
 	}
 	queueAwareRouting = true
 	if got := backendLoad(b); got != 10 {
-		t.Errorf("queue-aware on: backendLoad = %d, want 10 (QueueLoad)", got)
+		t.Errorf("queue-aware on + scraped: backendLoad = %d, want 10 (QueueLoad)", got)
 	}
 	queueAwareRouting = false // reset for other tests
+}
+
+func TestBackendLoadUnscrapedFallsBackToActiveReqs(t *testing.T) {
+	// A non-vLLM / never-scraped backend must NOT read as idle (0) under
+	// queue-aware; it falls back to its real proxy active-request count.
+	b := &Backend{}
+	b.ActiveReqs.Store(4)
+	// QueueScraped stays false; QueueDepth/ActiveInference stay 0
+	queueAwareRouting = true
+	if got := backendLoad(b); got != 4 {
+		t.Errorf("unscraped under queue-aware: backendLoad = %d, want 4 (ActiveReqs fallback, not 0)", got)
+	}
+	queueAwareRouting = false
 }
 
 func TestApplyLeastConnRRQueueAware(t *testing.T) {
@@ -69,9 +83,11 @@ func TestApplyLeastConnRRQueueAware(t *testing.T) {
 	a := &Backend{Config: BackendConfig{Name: "a"}}
 	a.ActiveReqs.Store(0)
 	a.QueueDepth.Store(20)
+	a.QueueScraped.Store(true)
 	b := &Backend{Config: BackendConfig{Name: "b"}}
 	b.ActiveReqs.Store(5)
 	b.QueueDepth.Store(0)
+	b.QueueScraped.Store(true)
 
 	r := &Router{}
 	cands := []RouteResult{{Backend: a}, {Backend: b}}

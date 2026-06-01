@@ -65,6 +65,7 @@ func (q *QueueScraper) scrapeAll(ctx context.Context) {
 		}
 		b.QueueDepth.Store(waiting)
 		b.ActiveInference.Store(running)
+		b.QueueScraped.Store(true)
 	}
 }
 
