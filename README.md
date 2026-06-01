@@ -612,6 +612,22 @@ Shipped in v0.3.0. All off by default; enable per need.
 - **Cost forecasting** — linear burn-rate extrapolation per service ("`my-api` hits its $50 budget at 2:14 PM"). `GET /api/costs/forecast`.
 - **DPO dataset export** — every quality-gate fallback (cheap fails, expensive succeeds) is logged as a preference pair (rejected/chosen) to build a fine-tuning dataset. Enable with `DPO_EXPORT_PATH=...`; inspect via `GET /api/dpo`.
 
+## Advanced Routing & Execution
+
+More opt-in strategies. All off by default; each adds cost/latency only when enabled.
+
+- **Predictive SLA routing** — each backend keeps a rolling p95 latency window; set `max_ttft_ms` on a rule and the router drops backends whose p95 exceeds it (never leaving zero candidates). Reactive today (route away from observed spikes).
+- **Spot-market arbitrage** — `server.cost_aware_routing: true` routes to the cheapest *eligible* backend (after health/SLA/cost filters). An optional `server.price_feed_url` (JSON map of backend → `{input_1m, output_1m}`, polled on `price_feed_interval`) keeps effective costs live. Cost takes precedence over cache warmth in this mode.
+- **Semantic / fuzzy prompt cache** — on an exact-cache miss, embeds the prompt and returns a cached answer if a stored prompt is cosine **≥ `min_similarity`** (default 0.96). Reuses the graphify embedder + pgvector; only fires on already-cacheable (deterministic) requests. Response header `X-Kronaxis-Cache: SEMANTIC`.
+
+  ```yaml
+  semantic_cache:
+    enabled: true
+    min_similarity: 0.96   # high by default — a near-duplicate returns a prior answer
+  ```
+- **System-2 reflection** — send `X-Kronaxis-Reflect: 1` and the router asks the model to review/correct its own answer before returning it (one extra round-trip, non-streaming). Response header `X-Kronaxis-Reflected: true`.
+- **Adversarial consensus** — send `X-Kronaxis-Consensus: 1` to dispatch to several backends; if they agree (Jaccard ≥ 0.8) the agreed answer is returned, otherwise `server.consensus_arbiter` resolves the disagreement. Response header `X-Kronaxis-Consensus: agreed|arbitrated`. Costs N×+1 calls — high-stakes opt-in.
+
 ## Agent Gateway
 
 Optional sub-service at `agent-gateway/`. Exposes CLI agents as OpenAI-compatible endpoints, so any kronaxis service that already speaks OpenAI can talk to a real agentic loop without changing client code.

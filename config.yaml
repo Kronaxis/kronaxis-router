@@ -20,6 +20,14 @@ server:
   # node. Composes with per-backend kv_pinning. Only matters with 2+ vLLM nodes.
   queue_aware_routing: false
   queue_scrape_interval: 5s
+  # Spot-market arbitrage: route to the cheapest eligible backend. Optional
+  # price_feed_url is a JSON map {"<backend>": {"input_1m": x, "output_1m": y}}.
+  cost_aware_routing: false
+  price_feed_url: ""
+  price_feed_interval: 5m
+  # Adversarial consensus arbiter (for X-Kronaxis-Consensus requests). Empty =
+  # use the first candidate to resolve disagreements.
+  consensus_arbiter: ""
   branding:
     headers: true                    # X-Powered-By: Kronaxis Router on every response
     header_name: "Kronaxis Router"
@@ -170,6 +178,7 @@ rules:
     match:
       priority_level: interactive
     backends: [local-large, cloud-fast]
+    # max_ttft_ms: 800   # predictive SLA: drop backends whose rolling p95 exceeds this
 
   # ── Principle 5: Vision routes to vision-capable backends ──────────
   - name: vision-tasks
@@ -396,3 +405,13 @@ graphify:
   #   cosine: 1.0
   #   tsvector: 0.0
   #   recency: 0.0
+
+# ──────────────────────────────────────────────────────────────────────
+# SEMANTIC CACHE (fuzzy prompt caching)
+# On an exact-cache miss, embed the prompt and return a cached answer if a
+# stored prompt is cosine >= min_similarity. Reuses the graphify embedder +
+# pgvector (needs graphify embedder + DATABASE_URL). Off by default.
+# ──────────────────────────────────────────────────────────────────────
+semantic_cache:
+  enabled: false
+  min_similarity: 0.96   # high by default — a near-duplicate returns a prior answer

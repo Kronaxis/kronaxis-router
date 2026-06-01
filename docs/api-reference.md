@@ -25,6 +25,8 @@ OpenAI-compatible chat completions proxy. This is the main endpoint.
 | `X-Kronaxis-Session-Create` | `true` | Store this transcript and return a session id. |
 | `X-Kronaxis-Session-ID` | string | Hydrate a stored session; send only the new turn. |
 | `X-Kronaxis-Session-TTL` | duration | Override the session TTL on create. |
+| `X-Kronaxis-Reflect` | `1` | Run a System-2 review pass on the answer before returning (non-streaming). |
+| `X-Kronaxis-Consensus` | `1` | Dispatch to several backends; return the agreed answer or an arbiter's resolution. |
 
 **Response:** Standard OpenAI ChatCompletion response.
 
@@ -36,7 +38,9 @@ OpenAI-compatible chat completions proxy. This is the main endpoint.
 | `X-Kronaxis-Router-Version` | Router version |
 | `X-Kronaxis-Backend` | Backend that served the request |
 | `X-Kronaxis-Rule` | Rule that matched |
-| `X-Kronaxis-Cache` | `HIT` if served from cache |
+| `X-Kronaxis-Cache` | `HIT` (exact) or `SEMANTIC` (fuzzy near-duplicate) if served from cache |
+| `X-Kronaxis-Reflected` | `true` if a System-2 reflection pass refined the answer |
+| `X-Kronaxis-Consensus` | `agreed` or `arbitrated` when consensus mode ran |
 | `X-Kronaxis-Graphify` | Mode actually used (`lossless` / `compress` / `augment`; only present when it ran) |
 | `X-Kronaxis-Graphify-Chunks` | Number of chunks injected |
 | `X-Kronaxis-Graphify-Tokens-Saved` | Approximate input tokens saved by compression |

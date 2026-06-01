@@ -27,6 +27,14 @@ type RouteRequest struct {
 	// violation, so the client always receives schema-valid JSON.
 	ResponseSchema string
 
+	// Reflect, set via X-Kronaxis-Reflect: 1, runs a System-2 review pass on the
+	// model's first answer before returning it (non-streaming only).
+	Reflect bool
+
+	// Consensus, set via X-Kronaxis-Consensus: 1, dispatches to several backends
+	// and resolves divergence with an arbiter before returning.
+	Consensus bool
+
 	// KVPrompt is the flattened prompt content used for KV-cache-aware
 	// prefix matching. Populated by the caller (proxy.go) from the
 	// incoming messages array. Empty when KV pinning is disabled or the
@@ -162,6 +170,21 @@ func (r *Router) balanceCandidatesPrompt(candidates []RouteResult, kvPrompt stri
 		return candidates
 	}
 
+	// Spot-market arbitrage: when enabled, the cheapest eligible backend wins
+	// (candidates are already filtered by health/SLA/max_cost). Cost takes
+	// precedence over cache warmth here — that's the point of arbitrage mode.
+	// Load is the tiebreaker among equally-priced backends.
+	if costAwareRouting {
+		sort.Slice(candidates, func(i, j int) bool {
+			ci, cj := candidates[i].Backend.EffectiveCost(), candidates[j].Backend.EffectiveCost()
+			if ci != cj {
+				return ci < cj
+			}
+			return backendLoad(candidates[i].Backend) < backendLoad(candidates[j].Backend)
+		})
+		return candidates
+	}
+
 	if kvIndex != nil && kvPrompt != "" {
 		reordered, depth := kvIndex.ChooseByKVDepth(candidates, kvPrompt)
 		if depth > 0 {
@@ -275,6 +298,9 @@ func (r *Router) resolveAllBackends(rule *RoutingRule, req RouteRequest, loraAda
 			Complexity: req.ComplexityScore,
 		})
 	}
+	// Predictive SLA: drop candidates whose rolling p95 latency blows the
+	// rule's max_ttft_ms budget (never empties the set). Off unless set.
+	results = filterBySLA(results, rule.MaxTTFTMs)
 	return results
 }
 

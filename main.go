@@ -203,6 +203,17 @@ func runServer() {
 		logger.Printf("queue-aware routing enabled: scraping vLLM /metrics every %s", cfg.Server.QueueScrapeInterval.Duration)
 	}
 
+	// Spot-market arbitrage: cheapest-eligible routing + optional live price feed.
+	costAwareRouting = cfg.Server.CostAwareRouting
+	if costAwareRouting {
+		logger.Printf("cost-aware routing enabled (cheapest eligible backend wins)")
+		if cfg.Server.PriceFeedURL != "" {
+			pf := newPriceFeed(cfg.Server.PriceFeedURL, cfg.Server.PriceFeedInterval.Duration)
+			go pf.Run(ctx)
+			logger.Printf("price feed enabled: %s every %s", cfg.Server.PriceFeedURL, cfg.Server.PriceFeedInterval.Duration)
+		}
+	}
+
 	// Graphify pre-stage: optional embedder + middleware. If embedder is
 	// configured but unreachable, log and continue (router still works).
 	//
@@ -267,6 +278,19 @@ func runServer() {
 			logger.Printf("graphify structural-only enabled (no retrieval backend): always_structural=%v ccr=%v default=%s",
 				gcfg.EffectiveAlwaysStructural(), gcfg.CCREnabled, gcfg.Default)
 		}
+	}
+
+	// Semantic prompt cache (reuses the graphify embedder + pgvector).
+	if cfg.SemanticCache.Enabled && graphifyEmbedder != nil && db != nil {
+		semCache = newSemanticCache(graphifyEmbedder, cfg.SemanticCache.MinSimilarity)
+		if err := semCache.ensureSchema(ctx); err != nil {
+			logger.Printf("semantic cache disabled: %v", err)
+			semCache = nil
+		} else {
+			logger.Printf("semantic cache enabled: threshold=%.2f", semCache.threshold)
+		}
+	} else if cfg.SemanticCache.Enabled {
+		logger.Printf("semantic cache enabled in config but needs a graphify embedder + DATABASE_URL; disabled")
 	}
 
 	// Register routes

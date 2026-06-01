@@ -14,8 +14,8 @@ import (
 
 // Shared HTTP clients for connection reuse.
 var (
-	llmClient      = &http.Client{Timeout: 120 * time.Second}
-	streamClient   = &http.Client{Timeout: 180 * time.Second}
+	llmClient    = &http.Client{Timeout: 120 * time.Second}
+	streamClient = &http.Client{Timeout: 180 * time.Second}
 )
 
 // OpenAI-compatible request/response structures.
@@ -114,8 +114,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// transcript replaces req.Messages here. New sessions get their ID
 	// surfaced via the X-Kronaxis-Session-ID response header below.
 	var (
-		sessionID    string
-		newSession   bool
+		sessionID  string
+		newSession bool
 	)
 	if sessionStore != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
@@ -159,6 +159,23 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Kronaxis-Cache", "HIT")
 			w.WriteHeader(statusCode)
 			w.Write(body)
+			return
+		}
+	}
+
+	// Semantic cache: on an exact-cache miss, a near-duplicate prompt (cosine
+	// >= threshold) returns the prior answer. Keyed on the ORIGINAL prompt
+	// (captured here, before graphify) so the store side matches re-asks.
+	var semKey string
+	if cacheable && semCache != nil {
+		semKey = FlattenMessages(req.Messages)
+		sctx, scancel := context.WithTimeout(r.Context(), 2*time.Second)
+		cb, cst, ok := semCache.Lookup(sctx, semKey)
+		scancel()
+		if ok {
+			w.Header().Set("X-Kronaxis-Cache", "SEMANTIC")
+			w.WriteHeader(cst)
+			w.Write(cb)
 			return
 		}
 	}
@@ -221,6 +238,27 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(candidates) == 0 {
 		writeErrorJSON(w, 503, "no healthy backend available")
 		return
+	}
+
+	// Adversarial consensus: dispatch to several backends + arbiter (opt-in,
+	// non-streaming). nil body => fall through to normal dispatch.
+	if meta.Consensus && !req.Stream && len(candidates) >= 2 {
+		consensusStart := time.Now()
+		if cbody, cstatus, cmode := runConsensus(&req, body, meta, candidates); cbody != nil {
+			latency := time.Since(consensusStart)
+			addBrandingHeaders(w, candidates[0])
+			responseBody := postProcessResponse(cbody, candidates[0].Backend)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Kronaxis-Consensus", cmode)
+			w.WriteHeader(cstatus)
+			w.Write(responseBody)
+			var chatResp ChatResponse
+			json.Unmarshal(cbody, &chatResp)
+			inputTokens, outputTokens := estimateTokens(&req, &chatResp)
+			recordStat(meta, candidates[0], latency, cstatus < 400)
+			logRequest(meta, candidates[0], inputTokens, outputTokens, latency, cstatus < 400, "")
+			return
+		}
 	}
 
 	// Budget downgrade: prepend cheaper backend if over budget
@@ -361,7 +399,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// System-2 reflection: optional review pass on the answer (opt-in).
+		if meta.Reflect && statusCode < 400 {
+			if refined, did := runReflection(&reqCopy, meta, routeResult.Backend, routeResult.ModelName, respBody); did {
+				respBody = refined
+				w.Header().Set("X-Kronaxis-Reflected", "true")
+			}
+		}
+
 		latency := time.Since(start)
+		routeResult.Backend.latency.record(latency) // predictive SLA window
 		var chatResp ChatResponse
 		json.Unmarshal(respBody, &chatResp)
 		inputTokens, outputTokens := estimateTokens(&reqCopy, &chatResp)
@@ -377,6 +424,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		success := statusCode < 400
 		if success && cacheable {
 			respCache.Set(cacheHit, responseBody, statusCode, respHeaders)
+			if semCache != nil && semKey != "" {
+				semCache.Store(r.Context(), semKey, responseBody, statusCode)
+			}
 		}
 		// Quality validation: sample cheap-model responses
 		if success && qualVal.ShouldSample() {
@@ -570,9 +620,9 @@ func forwardToGemini(backend *Backend, _ []byte, req *ChatRequest) (int, map[str
 }
 
 type geminiRequest struct {
-	Contents          []geminiContent          `json:"contents"`
-	SystemInstruction *geminiContent           `json:"systemInstruction,omitempty"`
-	GenerationConfig  *geminiGenerationConfig  `json:"generationConfig,omitempty"`
+	Contents          []geminiContent         `json:"contents"`
+	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
+	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type geminiContent struct {
@@ -581,8 +631,8 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text       string          `json:"text,omitempty"`
-	InlineData *geminiInline   `json:"inlineData,omitempty"`
+	Text       string        `json:"text,omitempty"`
+	InlineData *geminiInline `json:"inlineData,omitempty"`
 }
 
 type geminiInline struct {
