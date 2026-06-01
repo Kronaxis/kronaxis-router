@@ -1,4 +1,4 @@
-# Install torch FIRST, matched to the the GPU host CUDA version, e.g.:
+# Install torch FIRST, matched to your GPU host's CUDA version, e.g.:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
 # then: pip install -r requirements.txt
 llmlingua>=0.2.2
