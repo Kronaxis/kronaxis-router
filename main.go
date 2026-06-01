@@ -252,7 +252,11 @@ func runServer() {
 			logger.Printf("graphify enabled: mode=%s embedder=%s dim=%d fabric_url=%q default=%s",
 				mode, embName, embDim, gcfg.FabricURL, gcfg.Default)
 		} else {
-			logger.Printf("graphify enabled in config but no retrieval backend available (no embedder, no fabric_url); disabled")
+			// No retrieval backend, but still construct the middleware so the
+			// always-on lossless pass and CCR run on the hot path.
+			graphifyMW = newGraphifyMiddleware(gcfg, nil)
+			logger.Printf("graphify structural-only enabled (no retrieval backend): always_structural=%v ccr=%v default=%s",
+				gcfg.EffectiveAlwaysStructural(), gcfg.CCREnabled, gcfg.Default)
 		}
 	}
 
