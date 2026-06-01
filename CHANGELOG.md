@@ -4,6 +4,10 @@ All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added: Ollama embedder
+
+New `graphify.embedder.type: ollama` reuses a running Ollama (e.g. `nomic-embed-text`) via `/api/embeddings` — no extra sentence-transformers sidecar. Dim is auto-probed. This gives the graphify RAG pre-stage and the semantic prompt cache a local, dependency-free embedding backend (`graphify_embed.go`).
+
 ### Added: 5 advanced routing/execution features (all off by default, opt-in)
 
 - **Predictive SLA routing** — each backend keeps a rolling p95 latency window (`sla.go`); a rule's `max_ttft_ms` drops backends over budget (never empties the candidate set).

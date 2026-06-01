@@ -92,9 +92,94 @@ func newEmbedder(ctx context.Context, ec GraphifyEmbedderConfig) (Embedder, erro
 			dim:     dim,
 			client:  &http.Client{Timeout: 60 * time.Second},
 		}, nil
+	case "ollama":
+		url := ec.URL
+		if url == "" {
+			url = "http://localhost:11434"
+		}
+		model := ec.Model
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		e := &ollamaEmbedder{
+			url:    strings.TrimRight(url, "/"),
+			model:  model,
+			dim:    ec.Dim,
+			client: &http.Client{Timeout: 60 * time.Second},
+		}
+		if err := e.probe(ctx); err != nil {
+			return nil, fmt.Errorf("probe ollama embedder %s (%s): %w", url, model, err)
+		}
+		return e, nil
 	default:
 		return nil, fmt.Errorf("unknown embedder type %q", ec.Type)
 	}
+}
+
+// ── Ollama embeddings (local, reuses a running Ollama; no extra sidecar) ──
+
+type ollamaEmbedder struct {
+	url    string
+	model  string
+	dim    int
+	client *http.Client
+}
+
+func (e *ollamaEmbedder) Name() string { return "ollama:" + e.model }
+func (e *ollamaEmbedder) Dim() int     { return e.dim }
+
+// probe embeds a token to confirm reachability and discover the dim if unset.
+func (e *ollamaEmbedder) probe(ctx context.Context) error {
+	v, err := e.embedOne(ctx, "ping")
+	if err != nil {
+		return err
+	}
+	if len(v) == 0 {
+		return fmt.Errorf("ollama returned an empty embedding")
+	}
+	if e.dim == 0 {
+		e.dim = len(v)
+	}
+	return nil
+}
+
+// embedOne calls Ollama's /api/embeddings (one prompt per call — works across
+// Ollama versions). Returns the embedding vector.
+func (e *ollamaEmbedder) embedOne(ctx context.Context, text string) ([]float32, error) {
+	body, _ := json.Marshal(map[string]any{"model": e.model, "prompt": text})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.url+"/api/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		buf, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ollama embeddings %d: %s", resp.StatusCode, string(buf))
+	}
+	var er struct {
+		Embedding []float32 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		return nil, err
+	}
+	return er.Embedding, nil
+}
+
+func (e *ollamaEmbedder) Embed(ctx context.Context, _ string, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		v, err := e.embedOne(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
 }
 
 // ── local sentence-transformers sidecar ───────────────────────────────

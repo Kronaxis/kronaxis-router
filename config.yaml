@@ -360,11 +360,15 @@ graphify:
     timeout_ms: 8000
 
   embedder:
-    type: "local-st"           # local-st | gemini | openai
+    type: "local-st"           # local-st | ollama | gemini | openai
     url: "http://localhost:8053"   # local-st sidecar; default Docker service
     # model: "BAAI/bge-small-en-v1.5"   # only used if type=gemini/openai (st sidecar reads its own env)
     # api_key_env: "GEMINI_API_KEY"     # for type=gemini/openai
     # dim: 384                          # set for non-default embedder dim (must match ingest dim)
+    # --- Ollama embedder (reuses a running Ollama; no extra sidecar) ---
+    # type: "ollama"
+    # url: "http://localhost:11434"
+    # model: "nomic-embed-text"         # 768-dim; dim auto-probed if unset
 
   # Live re-ingest. Watches ingest_roots via fsnotify and re-ingests changed
   # files within ~2s. Independent from the cron-style one-shot ingest.
