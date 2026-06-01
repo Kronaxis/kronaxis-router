@@ -4,6 +4,10 @@ All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added: per-request response-schema validation (wired the quality gate)
+
+The `SchemaValidator` shipped in v0.3.0 but was never reachable from a request — there was no way to supply a schema. Now `X-Kronaxis-Response-Schema: <json-schema>` on a request makes the quality gate validate the model's JSON output against it and silently retry on the fallback backend on violation, so the client receives schema-valid JSON. A request-supplied schema activates gating regardless of the global `QUALITY_GATE_ENABLED` flag (streaming excluded); the retry needs `QUALITY_GATE_FALLBACK` set, else the original response is returned unchanged. Wired through both sequential and parallel gate modes.
+
 ### Added: queue-aware load balancing (ROADMAP Phase 1)
 
 `server.queue_aware_routing: true` starts a `QueueScraper` (`queueaware.go`) that polls each vLLM backend's `/metrics` on `queue_scrape_interval` (default 5s) and records `vllm:num_requests_waiting` → `Backend.QueueDepth` and `vllm:num_requests_running` → `Backend.ActiveInference`. Balancing then minimises `QueueLoad()` (queued + running) instead of the proxy's own active-request count, so traffic flows to the least-loaded node. Composes with KV pinning: candidates are ordered by warm-cache depth first, then least-loaded within the equal-cache group — "route to the warmest cache, unless it's overloaded". Best-effort: a scrape failure leaves last-known values and never affects request handling. Exposed in `/api/backends` and `/health` as `queue_depth` / `active_inference`. Off by default.

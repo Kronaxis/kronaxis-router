@@ -22,35 +22,45 @@ import (
 //     zero latency on failures.
 
 type QualityGateConfig struct {
-	Enabled    bool    `yaml:"enabled" json:"enabled"`
-	Mode       string  `yaml:"mode" json:"mode"`               // "sequential" (default) or "parallel"
-	SampleRate float64 `yaml:"sample_rate" json:"sample_rate"`  // 0.0-1.0, fraction of requests to gate (1.0 = all)
-	FallbackBackend string `yaml:"fallback_backend" json:"fallback_backend"` // backend name for retry/parallel
-	Checks     GateChecks `yaml:"checks" json:"checks"`
+	Enabled         bool       `yaml:"enabled" json:"enabled"`
+	Mode            string     `yaml:"mode" json:"mode"`                         // "sequential" (default) or "parallel"
+	SampleRate      float64    `yaml:"sample_rate" json:"sample_rate"`           // 0.0-1.0, fraction of requests to gate (1.0 = all)
+	FallbackBackend string     `yaml:"fallback_backend" json:"fallback_backend"` // backend name for retry/parallel
+	Checks          GateChecks `yaml:"checks" json:"checks"`
 }
 
 // GateChecks defines what quality checks to run on the response.
 type GateChecks struct {
-	MinLength      int  `yaml:"min_length" json:"min_length"`            // response must be >= N chars
-	MaxEmptyRate   float64 `yaml:"max_empty_rate" json:"max_empty_rate"` // reject if empty content
-	ValidJSON      bool `yaml:"valid_json" json:"valid_json"`            // if system prompt asks for JSON, validate it parses
-	NoRefusal      bool `yaml:"no_refusal" json:"no_refusal"`            // reject "I can't help with that" responses
-	MinTokens      int  `yaml:"min_tokens" json:"min_tokens"`            // response must have >= N tokens
+	MinLength    int     `yaml:"min_length" json:"min_length"`         // response must be >= N chars
+	MaxEmptyRate float64 `yaml:"max_empty_rate" json:"max_empty_rate"` // reject if empty content
+	ValidJSON    bool    `yaml:"valid_json" json:"valid_json"`         // if system prompt asks for JSON, validate it parses
+	NoRefusal    bool    `yaml:"no_refusal" json:"no_refusal"`         // reject "I can't help with that" responses
+	MinTokens    int     `yaml:"min_tokens" json:"min_tokens"`         // response must have >= N tokens
 }
 
 type QualityGate struct {
-	config    QualityGateConfig
-	gated     atomic.Int64
-	passed    atomic.Int64
-	retried   atomic.Int64
-	mu        sync.RWMutex
+	config  QualityGateConfig
+	schema  *SchemaValidator
+	gated   atomic.Int64
+	passed  atomic.Int64
+	retried atomic.Int64
+	mu      sync.RWMutex
 }
 
 func newQualityGate(config QualityGateConfig) *QualityGate {
 	if config.Mode == "" {
 		config.Mode = "sequential"
 	}
-	return &QualityGate{config: config}
+	return &QualityGate{config: config, schema: NewSchemaValidator()}
+}
+
+// schemaValid reports whether responseBody satisfies the per-request JSON
+// Schema (if any). Returns (true, "") when no schema was supplied.
+func (qg *QualityGate) schemaValid(meta RouteRequest, responseBody []byte) (bool, string) {
+	if meta.ResponseSchema == "" || qg.schema == nil {
+		return true, ""
+	}
+	return qg.schema.Validate(meta.ResponseSchema, responseBody)
 }
 
 func (qg *QualityGate) updateConfig(config QualityGateConfig) {
@@ -66,6 +76,13 @@ func (qg *QualityGate) updateConfig(config QualityGateConfig) {
 func (qg *QualityGate) ShouldGate(meta RouteRequest) bool {
 	qg.mu.RLock()
 	defer qg.mu.RUnlock()
+
+	// A per-request response schema opts in to gating regardless of the global
+	// enable flag — the client explicitly asked for validated output. Streaming
+	// can't be validated (chunked), so it's still excluded.
+	if meta.ResponseSchema != "" {
+		return !meta.Stream
+	}
 
 	if !qg.config.Enabled {
 		return false
@@ -108,6 +125,13 @@ func (qg *QualityGate) GateSequential(
 		if s, ok := resp.Choices[0].Message.Content.(string); ok {
 			content = s
 		}
+	}
+
+	// Per-request JSON Schema: if the cheap model's output violates it, retry
+	// on the fallback so the client always receives schema-valid JSON.
+	if ok, msg := qg.schemaValid(meta, cheapResponse); !ok {
+		logger.Printf("[quality-gate] sequential: schema violation (%s); retrying on fallback", msg)
+		return qg.retryOnFallback(req, meta)
 	}
 
 	if qg.passesChecks(content, systemPrompt) {
@@ -184,10 +208,11 @@ func (qg *QualityGate) GateParallel(
 		}
 	}
 
-	// If cheap model passed quality checks, use it (cheaper)
+	// If cheap model passed quality checks AND the schema (if any), use it.
 	if cheapResult.err == nil && cheapResult.status < 400 {
 		content := extractContent(cheapResult.body)
-		if qg.passesChecks(content, systemPrompt) {
+		schemaOK, _ := qg.schemaValid(meta, cheapResult.body)
+		if schemaOK && qg.passesChecks(content, systemPrompt) {
 			qg.passed.Add(1)
 			return cheapResult.body, cheapResult.status, false
 		}

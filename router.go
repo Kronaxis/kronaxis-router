@@ -21,6 +21,12 @@ type RouteRequest struct {
 	Stream          bool            // stream field from OpenAI request body
 	ComplexityScore ComplexityScore // 0-100 auto-classified complexity
 
+	// ResponseSchema is a JSON Schema supplied by the client via the
+	// X-Kronaxis-Response-Schema header. When set, the quality gate validates
+	// the model's JSON output against it and retries on the fallback backend on
+	// violation, so the client always receives schema-valid JSON.
+	ResponseSchema string
+
 	// KVPrompt is the flattened prompt content used for KV-cache-aware
 	// prefix matching. Populated by the caller (proxy.go) from the
 	// incoming messages array. Empty when KV pinning is disabled or the

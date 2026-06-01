@@ -26,11 +26,12 @@ func extractHeaders(r *http.Request) RouteRequest {
 	}
 
 	return RouteRequest{
-		Service:   r.Header.Get("X-Kronaxis-Service"),
-		CallType:  r.Header.Get("X-Kronaxis-CallType"),
-		Priority:  priority,
-		Tier:      tier,
-		PersonaID: r.Header.Get("X-Kronaxis-PersonaID"),
+		Service:        r.Header.Get("X-Kronaxis-Service"),
+		CallType:       r.Header.Get("X-Kronaxis-CallType"),
+		Priority:       priority,
+		Tier:           tier,
+		PersonaID:      r.Header.Get("X-Kronaxis-PersonaID"),
+		ResponseSchema: r.Header.Get("X-Kronaxis-Response-Schema"),
 	}
 }
 

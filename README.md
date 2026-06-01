@@ -600,7 +600,13 @@ Response headers: `X-Kronaxis-Graphify` (mode applied: `lossless`/`compress`/`au
 
 Shipped in v0.3.0. All off by default; enable per need.
 
-- **Schema-validated quality gates** — validate the cheap model's JSON output against a JSON Schema; on violation, silently retry on the fallback (expensive) backend so the client always gets schema-valid JSON. Enable with `QUALITY_GATE_ENABLED=true` (`QUALITY_GATE_MODE`, `QUALITY_GATE_FALLBACK`).
+- **Schema-validated quality gates** — supply a JSON Schema per request via the `X-Kronaxis-Response-Schema` header; the router validates the model's JSON output against it and, on violation, silently retries on the fallback backend so the client gets schema-valid JSON. A request-supplied schema activates gating on its own (no global flag needed), but a fallback must be configured (`QUALITY_GATE_FALLBACK`) for the retry to happen — otherwise the original response is returned unchanged. The broader quality gate (length/refusal/JSON checks) is enabled separately with `QUALITY_GATE_ENABLED=true` (`QUALITY_GATE_MODE`, `QUALITY_GATE_FALLBACK`). Streaming requests are not gated.
+
+  ```bash
+  curl http://localhost:8050/v1/chat/completions \
+    -H 'X-Kronaxis-Response-Schema: {"type":"object","required":["name","score"]}' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"Extract name and score..."}]}'
+  ```
 - **Anthropic cache breakpoints** — set `cache_breakpoints: true` on a backend to inject `cache_control: {"type":"ephemeral"}` markers on the stable prefix. Stacks multiplicatively with sessions for provider-side cache hits.
 - **Shadow routing** — mirror a configurable % of traffic to a candidate backend and compare outputs (Jaccard similarity), without returning the shadow response. Configured via `ab_tests` (`variant_a`/`variant_b`/`split_pct`/`mode: shadow`); results at `GET /api/shadow/stats`. Answers "if we switched to model X, what would we save and how similar are the answers?"
 - **Cost forecasting** — linear burn-rate extrapolation per service ("`my-api` hits its $50 budget at 2:14 PM"). `GET /api/costs/forecast`.
