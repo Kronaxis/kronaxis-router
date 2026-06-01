@@ -240,6 +240,12 @@ type ServerConfig struct {
 	HealthCheckInterval Duration       `yaml:"health_check_interval"`
 	DefaultTimeout      Duration       `yaml:"default_timeout"`
 	Branding            BrandingConfig `yaml:"branding"`
+	// QueueAwareRouting scrapes each vLLM backend's /metrics for
+	// num_requests_waiting + num_requests_running and prefers the
+	// least-loaded candidate (composes with KV pinning). Default false.
+	QueueAwareRouting bool `yaml:"queue_aware_routing"`
+	// QueueScrapeInterval is how often the QueueScraper polls /metrics. 0 → 5s.
+	QueueScrapeInterval Duration `yaml:"queue_scrape_interval"`
 }
 
 type BrandingConfig struct {
@@ -386,6 +392,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Server.DefaultTimeout.Duration == 0 {
 		c.Server.DefaultTimeout.Duration = 120 * time.Second
+	}
+	if c.Server.QueueScrapeInterval.Duration == 0 {
+		c.Server.QueueScrapeInterval.Duration = 5 * time.Second
 	}
 	if c.Server.Branding.HeaderName == "" {
 		c.Server.Branding.HeaderName = "Kronaxis Router"

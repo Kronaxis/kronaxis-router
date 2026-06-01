@@ -204,6 +204,23 @@ func sameKVDepth(a, b RouteResult, prompt string) bool {
 	return da == db
 }
 
+// queueAwareRouting, when true (set from server.queue_aware_routing at
+// startup), makes balancing prefer the backend with the lowest inference-server
+// load (queued + running, scraped from vLLM /metrics) rather than the proxy's
+// own in-flight request count. Composes with KV pinning: candidates are first
+// ordered by warm-cache depth, then least-loaded within the equal-cache group —
+// i.e. "route to the warmest cache, unless it's overloaded".
+var queueAwareRouting bool
+
+// backendLoad is the metric balancing minimises: scraped queue load when
+// queue-aware routing is on, otherwise the proxy's active-request count.
+func backendLoad(b *Backend) int64 {
+	if queueAwareRouting {
+		return b.QueueLoad()
+	}
+	return b.ActiveReqs.Load()
+}
+
 // applyLeastConnRR is the original balance logic, factored out so the
 // KV path can call it on a sub-slice.
 func (r *Router) applyLeastConnRR(candidates []RouteResult) []RouteResult {
@@ -211,11 +228,11 @@ func (r *Router) applyLeastConnRR(candidates []RouteResult) []RouteResult {
 		return candidates
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Backend.ActiveReqs.Load() < candidates[j].Backend.ActiveReqs.Load()
+		return backendLoad(candidates[i].Backend) < backendLoad(candidates[j].Backend)
 	})
-	minLoad := candidates[0].Backend.ActiveReqs.Load()
+	minLoad := backendLoad(candidates[0].Backend)
 	tied := 1
-	for tied < len(candidates) && candidates[tied].Backend.ActiveReqs.Load() == minLoad {
+	for tied < len(candidates) && backendLoad(candidates[tied].Backend) == minLoad {
 		tied++
 	}
 	if tied > 1 {
@@ -284,7 +301,6 @@ func matchRule(rule *RoutingRule, req RouteRequest) bool {
 
 	return true
 }
-
 
 // detectLoRAAdapter checks if the model field in the request corresponds to
 // a LoRA adapter on any backend.

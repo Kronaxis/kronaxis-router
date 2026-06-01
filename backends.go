@@ -38,7 +38,19 @@ type Backend struct {
 	LastLatency time.Duration
 	Failures    int
 	ActiveReqs  atomic.Int64
-	mu          sync.RWMutex
+	// QueueDepth / ActiveInference are scraped from a vLLM backend's /metrics
+	// (vllm:num_requests_waiting / vllm:num_requests_running) by the
+	// QueueScraper when queue_aware_routing is enabled. Zero otherwise.
+	QueueDepth      atomic.Int64
+	ActiveInference atomic.Int64
+	mu              sync.RWMutex
+}
+
+// QueueLoad returns the backend's total in-flight pressure as seen at the
+// inference server: queued + currently-generating requests. Used by
+// queue-aware routing to prefer the least-loaded candidate.
+func (b *Backend) QueueLoad() int64 {
+	return b.QueueDepth.Load() + b.ActiveInference.Load()
 }
 
 // HasCapability checks whether the backend declares a given capability.
@@ -98,6 +110,20 @@ func (bp *BackendPool) Get(name string) *Backend {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
 	return bp.backends[name]
+}
+
+// vllmBackends returns a snapshot of the backends whose type is "vllm" — the
+// only ones that expose num_requests_waiting/running. Used by the QueueScraper.
+func (bp *BackendPool) vllmBackends() []*Backend {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+	out := make([]*Backend, 0, len(bp.backends))
+	for _, b := range bp.backends {
+		if b.Config.Type == "vllm" {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // GetHealthy filters a list of backend names to those that are healthy,
@@ -201,15 +227,17 @@ func (bp *BackendPool) updateBackends(configs []BackendConfig) {
 }
 
 type backendStatusInfo struct {
-	Name         string  `json:"name"`
-	Status       string  `json:"status"`
-	Type         string  `json:"type"`
-	URL          string  `json:"url"`
-	ActiveReqs   int64   `json:"active_requests"`
-	LastCheckMS  int64   `json:"last_check_ms"`
-	LatencyMS    int64   `json:"latency_ms"`
-	CostInput1M  float64 `json:"cost_input_1m"`
-	CostOutput1M float64 `json:"cost_output_1m"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Type            string  `json:"type"`
+	URL             string  `json:"url"`
+	ActiveReqs      int64   `json:"active_requests"`
+	QueueDepth      int64   `json:"queue_depth"`
+	ActiveInference int64   `json:"active_inference"`
+	LastCheckMS     int64   `json:"last_check_ms"`
+	LatencyMS       int64   `json:"latency_ms"`
+	CostInput1M     float64 `json:"cost_input_1m"`
+	CostOutput1M    float64 `json:"cost_output_1m"`
 }
 
 func (bp *BackendPool) allStatuses() []backendStatusInfo {
@@ -220,15 +248,17 @@ func (bp *BackendPool) allStatuses() []backendStatusInfo {
 	for _, b := range bp.backends {
 		b.mu.RLock()
 		info := backendStatusInfo{
-			Name:         b.Config.Name,
-			Status:       b.Status.String(),
-			Type:         b.Config.Type,
-			URL:          b.Config.URL,
-			ActiveReqs:   b.ActiveReqs.Load(),
-			LastCheckMS:  time.Since(b.LastCheck).Milliseconds(),
-			LatencyMS:    b.LastLatency.Milliseconds(),
-			CostInput1M:  b.Config.CostInput1M,
-			CostOutput1M: b.Config.CostOutput1M,
+			Name:            b.Config.Name,
+			Status:          b.Status.String(),
+			Type:            b.Config.Type,
+			URL:             b.Config.URL,
+			ActiveReqs:      b.ActiveReqs.Load(),
+			QueueDepth:      b.QueueDepth.Load(),
+			ActiveInference: b.ActiveInference.Load(),
+			LastCheckMS:     time.Since(b.LastCheck).Milliseconds(),
+			LatencyMS:       b.LastLatency.Milliseconds(),
+			CostInput1M:     b.Config.CostInput1M,
+			CostOutput1M:    b.Config.CostOutput1M,
 		}
 		b.mu.RUnlock()
 		result = append(result, info)

@@ -4,6 +4,10 @@ All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added: queue-aware load balancing (ROADMAP Phase 1)
+
+`server.queue_aware_routing: true` starts a `QueueScraper` (`queueaware.go`) that polls each vLLM backend's `/metrics` on `queue_scrape_interval` (default 5s) and records `vllm:num_requests_waiting` → `Backend.QueueDepth` and `vllm:num_requests_running` → `Backend.ActiveInference`. Balancing then minimises `QueueLoad()` (queued + running) instead of the proxy's own active-request count, so traffic flows to the least-loaded node. Composes with KV pinning: candidates are ordered by warm-cache depth first, then least-loaded within the equal-cache group — "route to the warmest cache, unless it's overloaded". Best-effort: a scrape failure leaves last-known values and never affects request handling. Exposed in `/api/backends` and `/health` as `queue_depth` / `active_inference`. Off by default.
+
 ### Added: content-aware + learned prompt compression
 
 A content router (`compress.go`) that detects each prompt segment's type and applies the right compressor instead of one lexical pass over everything:

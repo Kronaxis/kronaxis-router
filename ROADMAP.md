@@ -63,7 +63,7 @@ backends:
     kv_pinning: true      # Enable prefix tracking for this backend
 ```
 
-### Queue-Aware Load Balancing
+### Queue-Aware Load Balancing — shipped
 
 **Problem:** Static priority routing can overwhelm a single node while others sit idle. Health checks tell you if a node is alive, not if it's busy.
 

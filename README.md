@@ -115,6 +115,7 @@ For the cost-routing proxy with cloud + local backends, see the [examples/](exam
 - **Per-service rate limiting** -- Token bucket rate limiter per caller. Configurable requests/second and burst size.
 - **Prometheus metrics** -- `/metrics` endpoint with request counts, latency histograms, error rates, backend health, cache stats.
 - **Health checks & failover** -- 30-second health probes. Error tracking from actual requests (including cloud APIs).
+- **Queue-aware load balancing** -- Optional (`server.queue_aware_routing: true`). Scrapes each vLLM backend's `/metrics` (`num_requests_waiting` + `num_requests_running`) and routes to the least-loaded node. Composes with KV pinning: warmest cache first, then least-loaded within equal-cache — route to the warmest cache unless it's overloaded.
 - **Streaming pass-through** -- SSE forwarding for real-time use cases (voice, chat).
 - **Qwen3 thinking mode** -- Auto-disables thinking mode and strips `<think>` tags for Qwen3/3.5 models.
 - **Hot-reloadable config** -- Edit `config.yaml` and rules update within 5 seconds. No restart needed.

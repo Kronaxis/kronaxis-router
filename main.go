@@ -194,6 +194,15 @@ func runServer() {
 	pool.startHealthChecks(ctx, cfg.Server.HealthCheckInterval.Duration)
 	go watchConfig(ctx, configPath)
 
+	// Queue-aware routing: scrape vLLM /metrics so balancing can prefer the
+	// least-loaded node (composes with KV pinning). Off unless configured.
+	queueAwareRouting = cfg.Server.QueueAwareRouting
+	if queueAwareRouting {
+		scraper := newQueueScraper(pool, cfg.Server.QueueScrapeInterval.Duration)
+		go scraper.Run(ctx)
+		logger.Printf("queue-aware routing enabled: scraping vLLM /metrics every %s", cfg.Server.QueueScrapeInterval.Duration)
+	}
+
 	// Graphify pre-stage: optional embedder + middleware. If embedder is
 	// configured but unreachable, log and continue (router still works).
 	//
