@@ -181,6 +181,9 @@ func handleConfigYAML(w http.ResponseWriter, r *http.Request) {
 		rtr.updateRules(newCfg.Rules, newCfg.Defaults)
 		bat.updateConfig(newCfg.Batching)
 		costs.updateBudgets(newCfg.Budgets)
+		if tenantRateLim != nil {
+			tenantRateLim.UpdateConfig(newCfg.TenantRateLimits)
+		}
 		configMu.Unlock()
 
 		logger.Println("config updated via API")
@@ -211,6 +214,9 @@ func handleConfigReload(w http.ResponseWriter, r *http.Request) {
 	rtr.updateRules(newCfg.Rules, newCfg.Defaults)
 	bat.updateConfig(newCfg.Batching)
 	costs.updateBudgets(newCfg.Budgets)
+	if tenantRateLim != nil {
+		tenantRateLim.UpdateConfig(newCfg.TenantRateLimits)
+	}
 	configMu.Unlock()
 
 	logger.Println("config reloaded via API")

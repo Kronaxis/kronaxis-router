@@ -31,6 +31,7 @@ var (
 	costs            *CostTracker
 	respCache        *ResponseCache
 	rateLim          *RateLimiter
+	tenantRateLim    *TenantRateLimiter
 	qualVal          *QualityValidator
 	auditLog         *AuditLogger
 	abTests          *ABTestManager
@@ -152,6 +153,16 @@ func runServer() {
 	costs = newCostTracker(cfg.Budgets, db)
 	respCache = newResponseCache(envInt("CACHE_MAX_SIZE", 1000), envInt("CACHE_TTL_SECONDS", 3600))
 	rateLim = newRateLimiter(cfg.RateLimits)
+	tenantRateLim = NewTenantRateLimiter(cfg.TenantRateLimits)
+	logger.Printf("per-tenant rate limiting: default=%g rpm burst=%d, unattributed=%g rpm burst=%d, bypass=%v, overrides=%d, disabled=%v",
+		cfg.TenantRateLimits.WithDefaults().DefaultRPM,
+		cfg.TenantRateLimits.WithDefaults().DefaultBurst,
+		cfg.TenantRateLimits.WithDefaults().UnattributedRPM,
+		cfg.TenantRateLimits.WithDefaults().UnattributedBurst,
+		cfg.TenantRateLimits.BypassTenants,
+		len(cfg.TenantRateLimits.Overrides),
+		cfg.TenantRateLimits.Disabled,
+	)
 	qualVal = newQualityValidator(QualityConfig{
 		Enabled:    env("QUALITY_ENABLED", "") == "true",
 		SampleRate: 0.05,
@@ -285,7 +296,7 @@ func runServer() {
 	registerUI(mux)
 
 	// Wrap with middleware (rate limit -> auth -> CORS -> logging)
-	handler := corsMiddleware(authMiddleware(rateLimitMiddleware(loggingMiddleware(mux))))
+	handler := corsMiddleware(authMiddleware(tenantRateLimitMiddleware(rateLimitMiddleware(loggingMiddleware(mux)))))
 
 	srv := &http.Server{
 		Addr:         ":" + port,

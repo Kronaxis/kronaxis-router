@@ -13,17 +13,17 @@ import (
 // Uses a simple text format (no dependency on prometheus/client_golang).
 
 type Metrics struct {
-	requestsTotal    map[string]*atomic.Int64 // label -> count
-	errorsTotal      map[string]*atomic.Int64
-	latencySumMS     map[string]*atomic.Int64
-	latencyCount     map[string]*atomic.Int64
-	latencyBuckets   map[string]*[8]atomic.Int64 // 10,25,50,100,250,500,1000,5000ms
-	cacheHits        atomic.Int64
-	cacheMisses      atomic.Int64
-	batchSubmitted   atomic.Int64
-	batchCompleted   atomic.Int64
-	batchFailed      atomic.Int64
-	mu               sync.RWMutex
+	requestsTotal  map[string]*atomic.Int64 // label -> count
+	errorsTotal    map[string]*atomic.Int64
+	latencySumMS   map[string]*atomic.Int64
+	latencyCount   map[string]*atomic.Int64
+	latencyBuckets map[string]*[8]atomic.Int64 // 10,25,50,100,250,500,1000,5000ms
+	cacheHits      atomic.Int64
+	cacheMisses    atomic.Int64
+	batchSubmitted atomic.Int64
+	batchCompleted atomic.Int64
+	batchFailed    atomic.Int64
+	mu             sync.RWMutex
 }
 
 var bucketBounds = [8]float64{10, 25, 50, 100, 250, 500, 1000, 5000}
@@ -174,6 +174,24 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 		b.mu.RUnlock()
 	}
 	pool.mu.RUnlock()
+
+	// Per-tenant rate limiting
+	if tenantRateLim != nil {
+		allowed, limited, tokens := tenantRateLim.snapshot()
+		fmt.Fprintln(w, "# HELP router_ratelimit_total Per-tenant LLM rate-limit decisions.")
+		fmt.Fprintln(w, "# TYPE router_ratelimit_total counter")
+		for _, t := range sortedKeys(allowed) {
+			fmt.Fprintf(w, "router_ratelimit_total{tenant=%q,decision=%q} %d\n", t, "allowed", allowed[t])
+		}
+		for _, t := range sortedKeys(limited) {
+			fmt.Fprintf(w, "router_ratelimit_total{tenant=%q,decision=%q} %d\n", t, "rate_limited", limited[t])
+		}
+		fmt.Fprintln(w, "# HELP router_ratelimit_bucket_tokens Current token count per tenant bucket.")
+		fmt.Fprintln(w, "# TYPE router_ratelimit_bucket_tokens gauge")
+		for _, t := range sortedKeys(tokens) {
+			fmt.Fprintf(w, "router_ratelimit_bucket_tokens{tenant=%q} %.3f\n", t, tokens[t])
+		}
+	}
 
 	// Uptime
 	fmt.Fprintln(w, "# HELP kronaxis_router_uptime_seconds Uptime in seconds.")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -13,14 +14,15 @@ import (
 
 // Config is the top-level configuration structure.
 type Config struct {
-	Server     ServerConfig                `yaml:"server"`
-	Backends   []BackendConfig             `yaml:"backends"`
-	Rules      []RoutingRule               `yaml:"rules"`
-	Budgets    map[string]BudgetConfig     `yaml:"budgets"`
-	RateLimits map[string]RateLimitConfig  `yaml:"rate_limits"`
-	Batching   BatchingConfig              `yaml:"batching"`
-	Defaults   DefaultsConfig              `yaml:"defaults"`
-	Graphify   GraphifyConfig              `yaml:"graphify"`
+	Server           ServerConfig               `yaml:"server"`
+	Backends         []BackendConfig            `yaml:"backends"`
+	Rules            []RoutingRule              `yaml:"rules"`
+	Budgets          map[string]BudgetConfig    `yaml:"budgets"`
+	RateLimits       map[string]RateLimitConfig `yaml:"rate_limits"`
+	TenantRateLimits TenantRateLimitConfig      `yaml:"tenant_rate_limits"`
+	Batching         BatchingConfig             `yaml:"batching"`
+	Defaults         DefaultsConfig             `yaml:"defaults"`
+	Graphify         GraphifyConfig             `yaml:"graphify"`
 }
 
 // GraphifyConfig configures the graphify pre-stage middleware (token-saving
@@ -31,11 +33,11 @@ type Config struct {
 // All other numeric fields use the standard 0-means-default convention.
 type GraphifyConfig struct {
 	Enabled             bool                   `yaml:"enabled"`
-	Default             string                 `yaml:"default"`               // off | augment | compress | auto
+	Default             string                 `yaml:"default"` // off | augment | compress | auto
 	IngestRoots         []string               `yaml:"ingest_roots"`
 	IngestExcludes      []string               `yaml:"ingest_excludes"`
-	IngestConcurrency   int                    `yaml:"ingest_concurrency"`    // parallel embed batches
-	WatchEnabled        bool                   `yaml:"watch_enabled"`         // run an fsnotify watcher in-process
+	IngestConcurrency   int                    `yaml:"ingest_concurrency"` // parallel embed batches
+	WatchEnabled        bool                   `yaml:"watch_enabled"`      // run an fsnotify watcher in-process
 	TopK                int                    `yaml:"top_k"`
 	MinCosineSim        *float64               `yaml:"min_cosine_sim"`
 	BM25Weight          float64                `yaml:"bm25_weight"`
@@ -43,7 +45,7 @@ type GraphifyConfig struct {
 	CompressBudgetChars int                    `yaml:"compress_budget_chars"`
 	AutoCompressChars   int                    `yaml:"auto_compress_chars"`
 	AutoAugmentMaxChars int                    `yaml:"auto_augment_max_chars"`
-	ServiceOverrides    map[string]string      `yaml:"service_overrides"`     // X-Kronaxis-Service -> mode
+	ServiceOverrides    map[string]string      `yaml:"service_overrides"` // X-Kronaxis-Service -> mode
 	Embedder            GraphifyEmbedderConfig `yaml:"embedder"`
 
 	// ----- Kronaxis Platform integration (Router <-> Fabric) -----
@@ -180,7 +182,7 @@ func (g GraphifyConfig) EffectiveMinCosineSim() float64 {
 }
 
 type GraphifyEmbedderConfig struct {
-	Type      string `yaml:"type"`        // local-st | gemini | openai
+	Type      string `yaml:"type"` // local-st | gemini | openai
 	URL       string `yaml:"url"`
 	Model     string `yaml:"model"`
 	APIKeyEnv string `yaml:"api_key_env"`
@@ -249,19 +251,19 @@ type BrandingConfig struct {
 }
 
 type BackendConfig struct {
-	Name           string             `yaml:"name" json:"name"`
-	URL            string             `yaml:"url" json:"url"`
-	Type           string             `yaml:"type" json:"type"`
-	ModelName      string             `yaml:"model_name" json:"model_name"`
-	CostInput1M    float64            `yaml:"cost_input_1m" json:"cost_input_1m"`
-	CostOutput1M   float64            `yaml:"cost_output_1m" json:"cost_output_1m"`
-	Capabilities   []string           `yaml:"capabilities" json:"capabilities"`
-	MaxConcurrent  int                `yaml:"max_concurrent" json:"max_concurrent"`
-	LoRAAdapters   []string           `yaml:"lora_adapters" json:"lora_adapters"`
-	APIKey         string             `yaml:"api_key" json:"api_key,omitempty"`
-	Dynamic        bool               `yaml:"dynamic" json:"dynamic"`
-	HealthEndpoint string             `yaml:"health_endpoint" json:"health_endpoint"`
-	KVPinning      *KVPinningConfig   `yaml:"kv_pinning,omitempty" json:"kv_pinning,omitempty"`
+	Name           string           `yaml:"name" json:"name"`
+	URL            string           `yaml:"url" json:"url"`
+	Type           string           `yaml:"type" json:"type"`
+	ModelName      string           `yaml:"model_name" json:"model_name"`
+	CostInput1M    float64          `yaml:"cost_input_1m" json:"cost_input_1m"`
+	CostOutput1M   float64          `yaml:"cost_output_1m" json:"cost_output_1m"`
+	Capabilities   []string         `yaml:"capabilities" json:"capabilities"`
+	MaxConcurrent  int              `yaml:"max_concurrent" json:"max_concurrent"`
+	LoRAAdapters   []string         `yaml:"lora_adapters" json:"lora_adapters"`
+	APIKey         string           `yaml:"api_key" json:"api_key,omitempty"`
+	Dynamic        bool             `yaml:"dynamic" json:"dynamic"`
+	HealthEndpoint string           `yaml:"health_endpoint" json:"health_endpoint"`
+	KVPinning      *KVPinningConfig `yaml:"kv_pinning,omitempty" json:"kv_pinning,omitempty"`
 	// CacheBreakpoints, when true, instructs the proxy to inject
 	// provider specific cache markers (currently Anthropic ephemeral)
 	// onto the stable prefix of the messages array before forwarding.
@@ -421,6 +423,33 @@ func resolveEnvVars(c *Config) {
 		c.Backends[i].APIKey = resolveEnv(c.Backends[i].APIKey)
 		c.Backends[i].URL = resolveEnv(c.Backends[i].URL)
 	}
+	// Env vars override per-tenant rate limit defaults. Useful for ops
+	// who want to raise limits without editing yaml + reloading.
+	if v := os.Getenv("RATELIMIT_PER_TENANT_RPM"); v != "" {
+		var f float64
+		if _, err := fmt.Sscanf(v, "%f", &f); err == nil && f > 0 {
+			c.TenantRateLimits.DefaultRPM = f
+		}
+	}
+	if v := os.Getenv("RATELIMIT_PER_TENANT_BURST"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			c.TenantRateLimits.DefaultBurst = n
+		}
+	}
+	if v := os.Getenv("RATELIMIT_DISABLED_TENANTS"); v != "" {
+		parts := strings.Split(v, ",")
+		extra := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				extra = append(extra, p)
+			}
+		}
+		c.TenantRateLimits.BypassTenants = append(c.TenantRateLimits.BypassTenants, extra...)
+	}
+	if v := os.Getenv("RATELIMIT_TENANT_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+		c.TenantRateLimits.Disabled = true
+	}
 }
 
 func resolveEnv(s string) string {
@@ -438,7 +467,7 @@ func sortRules(c *Config) {
 
 // Config hot-reload via polling.
 var (
-	configMu      sync.RWMutex
+	configMu       sync.RWMutex
 	skipNextReload bool
 )
 
@@ -488,6 +517,9 @@ func watchConfig(ctx context.Context, path string) {
 			bat.updateConfig(newCfg.Batching)
 			costs.updateBudgets(newCfg.Budgets)
 			rateLim.updateLimits(newCfg.RateLimits)
+			if tenantRateLim != nil {
+				tenantRateLim.UpdateConfig(newCfg.TenantRateLimits)
+			}
 			configMu.Unlock()
 
 			logger.Printf("config reloaded: %d backends, %d rules",

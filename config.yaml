@@ -254,6 +254,38 @@ batching:
     - interactive
 
 # ──────────────────────────────────────────────────────────────────────
+# PER-TENANT RATE LIMITS (BoS Completion Spec §3.4 row 5.4)
+# Token-bucket rate limiting per tenant on the proxy hot path
+# (/v1/chat/completions + /v1/video/generate). Stops a runaway tenant
+# from starving every other tenant.
+#
+# Tenant resolution: X-Kronaxis-Tenant-ID header > X-Kronaxis-Service
+# header > "unattributed" bucket. Internal services should be in
+# bypass_tenants.
+#
+# Cookbook: docs/operations/cookbooks/router-rate-limits.md
+# Env overrides: RATELIMIT_PER_TENANT_RPM, RATELIMIT_PER_TENANT_BURST,
+#                RATELIMIT_DISABLED_TENANTS, RATELIMIT_TENANT_DISABLED.
+# ──────────────────────────────────────────────────────────────────────
+
+tenant_rate_limits:
+  default_rpm: 60              # Sustained 60 reqs/min per tenant (~1/s)
+  default_burst: 10            # Burst capacity (max tokens in bucket)
+  unattributed_rpm: 30         # Lower cap for callers with no tenant ID
+  unattributed_burst: 5
+  bypass_tenants:              # Never rate-limited (internal services)
+    - controld
+    - billing-agentd
+    - updaterd
+    - system
+  overrides:                   # Per-tenant exceptions
+    # Example: paid sovereign customer with higher cap
+    # sovereign-customer-acme:
+    #   rpm: 600
+    #   burst: 100
+  disabled: false              # Emergency global off-switch
+
+# ──────────────────────────────────────────────────────────────────────
 # GRAPHIFY PRE-STAGE (token-saving RAG in front of every backend)
 # Augment thin prompts with project context, or compress fat ones with
 # the relevant chunks only. Sits BEFORE classifier + cost routing so the
