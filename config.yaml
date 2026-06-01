@@ -15,6 +15,11 @@ server:
   port: 8050
   health_check_interval: 30s
   default_timeout: 120s
+  # Queue-aware load balancing: scrape each vLLM backend's /metrics
+  # (num_requests_waiting + num_requests_running) and route to the least-loaded
+  # node. Composes with per-backend kv_pinning. Only matters with 2+ vLLM nodes.
+  queue_aware_routing: false
+  queue_scrape_interval: 5s
   branding:
     headers: true                    # X-Powered-By: Kronaxis Router on every response
     header_name: "Kronaxis Router"
@@ -41,6 +46,14 @@ backends:
     max_concurrent: 4
     lora_adapters: []
     health_endpoint: "/v1/models"
+    # KV cache-aware routing: bias follow-up turns to whichever node already
+    # has this prompt's prefix warm. Inspect trees at GET /api/kv-trees.
+    # kv_pinning:
+    #   enabled: true
+    #   max_prefix_age_seconds: 600
+    #   hash_chunk_tokens: 128
+    #   max_nodes: 10000
+    # cache_breakpoints: true        # inject Anthropic ephemeral cache markers (Anthropic/OpenRouter backends)
 
   - name: local-small
     url: "http://localhost:8001"
@@ -314,6 +327,28 @@ graphify:
   compress_budget_chars: 4800  # ~1200 tokens for compressed replacement
   auto_compress_chars: 8000    # auto-mode: any single message larger than this triggers compress
   auto_augment_max_chars: 4000 # auto-mode: total prompt smaller than this triggers augment
+
+  # ── Content-aware compression (headroom-inspired) ──────────────────
+  # Lossless tier (always_structural) runs on ALL traffic: JSON compaction +
+  # prose whitespace, keeps comments, never substitutes. The aggressive tier
+  # (per request via X-Kronaxis-Graphify: compress) adds the lossy steps below.
+  always_structural: true      # lossless tier on all traffic (default true)
+  json_tabularize: false       # hoist repeated keys from arrays of objects (lossless)
+  json_drop_nulls: false       # prune null/empty JSON fields (lossy)
+  # CCR (reversible compress-cache-retrieve): stash oversized blocks, drop a
+  # stub the model expands via compress_retrieve tool / GET /v1/compress/retrieve.
+  ccr_enabled: false
+  ccr_threshold_chars: 4000
+  ccr_capacity: 1024
+  ccr_services: []             # X-Kronaxis-Service values allowed to receive CCR stubs
+  # Learned prose compressor (self-hosted LLMLingua-2 GPU sidecar; lossy).
+  # See services/prose-compressor/. Off unless url is set + enabled.
+  prose_compressor:
+    enabled: false
+    url: ""                    # e.g. http://gpu-host:8056/compress
+    rate: 0.5                  # fraction of prose tokens to keep
+    min_chars: 600
+    timeout_ms: 8000
 
   embedder:
     type: "local-st"           # local-st | gemini | openai

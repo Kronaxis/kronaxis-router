@@ -51,8 +51,14 @@ Without headers, the router uses **automatic classification** to determine the r
 | `X-Kronaxis-Priority` | `interactive`, `normal`, `background`, `bulk` | Controls batching and auto-batch routing |
 | `X-Kronaxis-CallType` | Any string | Task type for fine-grained rule matching |
 | `X-Kronaxis-PersonaID` | Any string | Cost attribution to a specific entity |
+| `X-Kronaxis-Graphify` | `compress`/`augment`/`auto`/`off` | Per-request RAG + compression mode |
+| `X-Kronaxis-Response-Schema` | JSON Schema | Validate the model's JSON output; retry on fallback on violation |
+| `X-Kronaxis-Compress-CCR` | `1` | Allow CCR elision (this client can fetch elided blocks back) |
+| `X-Kronaxis-Session-Create` / `-ID` | `true` / id | Upload context once, then send only new turns (see README → Stateful Sessions) |
 
 **All headers are optional.** The router works without any of them.
+
+For deeper feature usage — cluster intelligence (KV pinning, queue-aware), context compression, sessions, and schema-validated quality gates — see the corresponding sections in the [README](../README.md).
 
 ## Automatic Tier Classification
 

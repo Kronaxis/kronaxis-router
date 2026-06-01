@@ -20,6 +20,11 @@ OpenAI-compatible chat completions proxy. This is the main endpoint.
 | `X-Kronaxis-Tier` | int | `1` (heavy reasoning), `2` (structured extraction) |
 | `X-Kronaxis-PersonaID` | string | Cost attribution identifier |
 | `X-Kronaxis-Graphify` | string | `compress` / `augment` / `auto` / `off`. Overrides global default + service override. |
+| `X-Kronaxis-Response-Schema` | string (JSON) | JSON Schema to validate the model's JSON output against; on violation the gate retries on the fallback backend (needs `QUALITY_GATE_FALLBACK`). |
+| `X-Kronaxis-Compress-CCR` | `1` | Opt this client in to CCR elision (it can fetch elided blocks via `compress_retrieve`). |
+| `X-Kronaxis-Session-Create` | `true` | Store this transcript and return a session id. |
+| `X-Kronaxis-Session-ID` | string | Hydrate a stored session; send only the new turn. |
+| `X-Kronaxis-Session-TTL` | duration | Override the session TTL on create. |
 
 **Response:** Standard OpenAI ChatCompletion response.
 
@@ -32,9 +37,12 @@ OpenAI-compatible chat completions proxy. This is the main endpoint.
 | `X-Kronaxis-Backend` | Backend that served the request |
 | `X-Kronaxis-Rule` | Rule that matched |
 | `X-Kronaxis-Cache` | `HIT` if served from cache |
-| `X-Kronaxis-Graphify` | Mode actually used (only present when graphify ran) |
+| `X-Kronaxis-Graphify` | Mode actually used (`lossless` / `compress` / `augment`; only present when it ran) |
 | `X-Kronaxis-Graphify-Chunks` | Number of chunks injected |
-| `X-Kronaxis-Graphify-Tokens-Saved` | Approximate input tokens saved (compress mode only) |
+| `X-Kronaxis-Graphify-Tokens-Saved` | Approximate input tokens saved by compression |
+| `X-Kronaxis-Complexity` | Auto-classified complexity score (0–100) when tier was unset |
+| `X-Kronaxis-Quality-Gate` | `retried` if the quality gate fell back to a stronger backend |
+| `X-Kronaxis-Session-ID` / `X-Kronaxis-Session-Created` | Session id (and whether newly created) |
 
 **Special behaviour for `bulk` priority:** If the target backend supports batch APIs, returns HTTP 202 with a batch job instead of a synchronous response.
 
@@ -294,6 +302,26 @@ View A/B test results.
   "variant_b": {"backend": "gemini-flash", "requests": 100, "avg_latency_ms": 300, "total_cost": 0.060}
 }]
 ```
+
+---
+
+## Cluster Intelligence, Sessions, Compression & Ops
+
+Endpoints added in v0.3.0 and later. See the README for behaviour and config.
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/sessions` | GET | List stored sessions |
+| `/v1/sessions/<id>` | GET / DELETE | Inspect / delete a session |
+| `/api/kv-trees` | GET | Inspect per-backend KV-cache prefix trees (KV pinning) |
+| `/v1/compress/retrieve?id=<id>` | GET | Fetch the original of a CCR-elided block (`?format=json` for metadata) |
+| `/api/costs/forecast` | GET | Per-service budget burn-rate forecast |
+| `/api/shadow/stats` | GET | Shadow-routing comparison stats (Jaccard similarity) |
+| `/api/dpo` | GET | DPO preference-pair export status |
+
+Queue-aware load balancing has no endpoint of its own; per-backend `queue_depth` and `active_inference` appear in `GET /api/backends` and `GET /health`. Schema-validated quality gating is driven by the `X-Kronaxis-Response-Schema` request header (see the proxy endpoint above).
+
+The `compress_retrieve` MCP tool wraps `/v1/compress/retrieve` for MCP clients.
 
 ---
 

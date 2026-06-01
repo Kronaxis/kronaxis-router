@@ -99,6 +99,11 @@ batching:
 | `CACHE_TTL_SECONDS` | `3600` | Cache entry TTL |
 | `BATCH_DATA_DIR` | `/tmp/kronaxis-router-batches` | Batch job storage |
 | `QUALITY_ENABLED` | (empty) | Set `true` for quality validation |
+| `QUALITY_GATE_ENABLED` | (empty) | Set `true` for the quality gate (cheap→validate→retry) |
+| `QUALITY_GATE_MODE` | `sequential` | `sequential` or `parallel` |
+| `QUALITY_GATE_FALLBACK` | (empty) | Backend name to retry on (needed for schema-violation retries) |
+| `DPO_EXPORT_PATH` | (empty) | Path to write DPO preference pairs (JSONL) |
+| `RATELIMIT_PER_TENANT_RPM` / `_BURST` | (empty) | Override per-tenant rate-limit defaults |
 | `AUDIT_ENABLED` | (empty) | Set `true` for audit logging |
 | `AUDIT_LOG_FILE` | `audit.jsonl` | Audit log path |
 | `AUDIT_MAX_ENTRIES` | `100000` | Rotate after N entries |
@@ -124,6 +129,42 @@ Backend fields that support `env:` prefix resolution:
 Rules are evaluated in **priority order** (highest first). Only non-empty/non-zero match fields must match. An empty match (`match: {}`) matches everything.
 
 Multiple rules can have the same priority. They are evaluated in config order within the same priority level.
+
+## Cluster Intelligence, Compression & Sessions
+
+Configured under `server`, per-backend, and `graphify`. The README has full explanations; the keys:
+
+```yaml
+server:
+  queue_aware_routing: true      # scrape vLLM /metrics, route to least-loaded node
+  queue_scrape_interval: 5s
+
+backends:
+  - name: vllm-1
+    type: vllm
+    kv_pinning: { enabled: true, max_prefix_age_seconds: 600, hash_chunk_tokens: 128, max_nodes: 10000 }
+    cache_breakpoints: true      # inject Anthropic ephemeral cache markers
+
+graphify:
+  enabled: true
+  always_structural: true        # lossless compression on all traffic (default true)
+  json_tabularize: true          # hoist repeated keys in arrays of objects
+  json_drop_nulls: false         # prune null/empty JSON (lossy)
+  ccr_enabled: false             # reversible compress-cache-retrieve
+  ccr_threshold_chars: 4000
+  ccr_services: []
+  prose_compressor:              # learned LLMLingua-2 endpoint (lossy)
+    enabled: false
+    url: "http://gpu-host:8056/compress"
+    rate: 0.5
+    min_chars: 600
+    timeout_ms: 8000
+```
+
+- **Stateful sessions** need only `DATABASE_URL` set (sessions live in `kr_sessions`); driven by `X-Kronaxis-Session-*` headers, no config block.
+- **Per-request schema validation**: send `X-Kronaxis-Response-Schema: <json-schema>`; set `QUALITY_GATE_FALLBACK` so violations can retry on a stronger backend.
+
+See the README sections "Cluster Intelligence", "Stateful Sessions", "Context Compression", and "Production Safety & Intelligence" for behaviour and trade-offs.
 
 ## Example Configs
 

@@ -84,7 +84,17 @@ Steps marked **NEW** are the graphify pre-stage added 2026-05-08.
 | `quality.go` | 239 | Quality validation sampling, auto-promote/demote |
 | `abtest.go` | 158 | A/B traffic splitting, per-variant metrics |
 | `tokens.go` | 98 | BPE-approximation token counting |
-| `compress.go` | 140 | Prompt compression (whitespace, dedup, truncation) |
+| `compress.go` | ~330 | Content-aware compression router (JSON/code/prose dispatch, lossless + aggressive profiles) |
+| `compress_json.go` | ~190 | JSON compaction, null-pruning, array-of-objects tabularisation |
+| `compress_code.go` | ~200 | String-literal-aware comment + blank-line stripping (safe languages only) |
+| `ccr_store.go` / `ccr_http.go` | ~190 | Reversible compress-cache-retrieve store + `/v1/compress/retrieve` |
+| `prose_compressor.go` | ~90 | Client for the self-hosted LLMLingua-2 prose endpoint |
+| `queueaware.go` | ~140 | vLLM `/metrics` scraper for queue-aware load balancing |
+| `kvtree.go` / `kv_index.go` | ~360 | KV cache-aware routing (radix prefix trees) |
+| `sessions.go` / `sessions_http.go` | ~330 | Stateful sessions (`kr_sessions`, hydration, TTL sweeper) |
+| `qualitygate.go` / `schema_validate.go` | ~360 | Quality gate + JSON-Schema response validation |
+| `tenant_ratelimit.go` | ~340 | Per-tenant token-bucket rate limiting |
+| `shadow_router.go` / `cost_forecast.go` / `dpo_export.go` | ~620 | Shadow routing, cost forecasting, DPO export |
 | `metrics.go` | 184 | Prometheus text format metrics |
 | `ratelimit.go` | 137 | Token bucket rate limiter per service |
 | `middleware.go` | 125 | Auth, CORS, logging, SSRF validation |
