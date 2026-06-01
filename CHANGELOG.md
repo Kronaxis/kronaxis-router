@@ -4,6 +4,14 @@ All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added: 5 advanced routing/execution features (all off by default, opt-in)
+
+- **Predictive SLA routing** — each backend keeps a rolling p95 latency window (`sla.go`); a rule's `max_ttft_ms` drops backends over budget (never empties the candidate set).
+- **Spot-market arbitrage** — `server.cost_aware_routing` prefers the cheapest eligible backend; an optional `price_feed_url` (`pricefeed.go`) keeps effective per-backend cost live.
+- **Semantic / fuzzy prompt cache** — `semantic_cache.enabled` embeds the prompt and returns a cached answer on cosine ≥ `min_similarity` (default 0.96). Reuses the graphify embedder + pgvector (`semcache.go`); response header `X-Kronaxis-Cache: SEMANTIC`. Only on already-cacheable (deterministic) requests.
+- **System-2 reflection** — `X-Kronaxis-Reflect: 1` runs a review pass on the model's answer (`reflect.go`); header `X-Kronaxis-Reflected: true`. Non-streaming, best-effort.
+- **Adversarial consensus** — `X-Kronaxis-Consensus: 1` dispatches to several backends, returns the agreed answer (Jaccard ≥ 0.8) or resolves divergence with `server.consensus_arbiter` (`consensus.go`); header `X-Kronaxis-Consensus: agreed|arbitrated`.
+
 ### Added: per-request response-schema validation (wired the quality gate)
 
 The `SchemaValidator` shipped in v0.3.0 but was never reachable from a request — there was no way to supply a schema. Now `X-Kronaxis-Response-Schema: <json-schema>` on a request makes the quality gate validate the model's JSON output against it and silently retry on the fallback backend on violation, so the client receives schema-valid JSON. A request-supplied schema activates gating regardless of the global `QUALITY_GATE_ENABLED` flag (streaming excluded); the retry needs `QUALITY_GATE_FALLBACK` set, else the original response is returned unchanged. Wired through both sequential and parallel gate modes.

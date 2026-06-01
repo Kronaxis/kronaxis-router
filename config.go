@@ -23,6 +23,14 @@ type Config struct {
 	Batching         BatchingConfig             `yaml:"batching"`
 	Defaults         DefaultsConfig             `yaml:"defaults"`
 	Graphify         GraphifyConfig             `yaml:"graphify"`
+	SemanticCache    SemanticCacheConfig        `yaml:"semantic_cache"`
+}
+
+// SemanticCacheConfig configures fuzzy prompt caching (reuses the graphify
+// embedder + pgvector). Off by default.
+type SemanticCacheConfig struct {
+	Enabled       bool    `yaml:"enabled"`
+	MinSimilarity float64 `yaml:"min_similarity"` // cosine threshold; 0 → 0.96
 }
 
 // GraphifyConfig configures the graphify pre-stage middleware (token-saving
@@ -246,6 +254,17 @@ type ServerConfig struct {
 	QueueAwareRouting bool `yaml:"queue_aware_routing"`
 	// QueueScrapeInterval is how often the QueueScraper polls /metrics. 0 → 5s.
 	QueueScrapeInterval Duration `yaml:"queue_scrape_interval"`
+	// CostAwareRouting (spot-market arbitrage): prefer the cheapest eligible
+	// backend (after health/SLA/cost filters). Cost trumps cache warmth.
+	CostAwareRouting bool `yaml:"cost_aware_routing"`
+	// PriceFeedURL is an operator-supplied JSON endpoint mapping backend name →
+	// {input_1m, output_1m}; polled to keep effective costs live. Empty = use
+	// static per-backend costs from config.
+	PriceFeedURL      string   `yaml:"price_feed_url"`
+	PriceFeedInterval Duration `yaml:"price_feed_interval"` // 0 → 5m
+	// ConsensusArbiter is the backend that resolves disagreements for
+	// X-Kronaxis-Consensus requests. Empty → use the first candidate.
+	ConsensusArbiter string `yaml:"consensus_arbiter"`
 }
 
 type BrandingConfig struct {
@@ -299,12 +318,13 @@ type KVPinningConfig struct {
 }
 
 type RoutingRule struct {
-	Name     string    `yaml:"name" json:"name"`
-	Priority int       `yaml:"priority" json:"priority"`
-	Match    RuleMatch `yaml:"match" json:"match"`
-	Backends []string  `yaml:"backends" json:"backends"`
-	MaxCost  float64   `yaml:"max_cost_1m" json:"max_cost_1m"`
-	Required []string  `yaml:"required_capabilities" json:"required_capabilities"`
+	Name      string    `yaml:"name" json:"name"`
+	Priority  int       `yaml:"priority" json:"priority"`
+	Match     RuleMatch `yaml:"match" json:"match"`
+	Backends  []string  `yaml:"backends" json:"backends"`
+	MaxCost   float64   `yaml:"max_cost_1m" json:"max_cost_1m"`
+	Required  []string  `yaml:"required_capabilities" json:"required_capabilities"`
+	MaxTTFTMs int       `yaml:"max_ttft_ms" json:"max_ttft_ms"` // predictive SLA: drop backends whose p95 latency exceeds this
 }
 
 type RuleMatch struct {

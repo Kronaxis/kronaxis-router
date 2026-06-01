@@ -48,7 +48,10 @@ type Backend struct {
 	QueueDepth      atomic.Int64
 	ActiveInference atomic.Int64
 	QueueScraped    atomic.Bool
-	mu              sync.RWMutex
+	// latency is a rolling window of recent end-to-end request latencies, used
+	// by predictive SLA routing (max_ttft_ms). Populated on each served request.
+	latency latencyWindow
+	mu      sync.RWMutex
 }
 
 // QueueLoad returns the backend's total in-flight pressure as seen at the

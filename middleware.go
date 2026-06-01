@@ -32,6 +32,18 @@ func extractHeaders(r *http.Request) RouteRequest {
 		Tier:           tier,
 		PersonaID:      r.Header.Get("X-Kronaxis-PersonaID"),
 		ResponseSchema: r.Header.Get("X-Kronaxis-Response-Schema"),
+		Reflect:        isTruthyHeader(r.Header.Get("X-Kronaxis-Reflect")),
+		Consensus:      isTruthyHeader(r.Header.Get("X-Kronaxis-Consensus")),
+	}
+}
+
+// isTruthyHeader treats "1"/"true"/"yes" (case-insensitive) as enabled.
+func isTruthyHeader(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
 	}
 }
 
