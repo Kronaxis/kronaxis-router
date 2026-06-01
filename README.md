@@ -301,6 +301,63 @@ curl http://localhost:8050/health
 
 Headers are optional. Without them, the router uses default rules and the fallback chain.
 
+When `X-Kronaxis-Tier` is unset, the router auto-classifies request complexity (0–100) and picks the tier itself. The score is surfaced as the `X-Kronaxis-Complexity` response header.
+
+## Cluster Intelligence (multi-vLLM)
+
+Two routing optimisations for anyone running more than one vLLM node. They compose: **route to the warmest cache, unless it's overloaded.**
+
+### KV cache-aware routing (radix-tree pinning)
+
+Round-robin across a vLLM cluster forces each node to recompute the KV cache for multi-turn conversations — a 100k-token system prompt gets reprocessed on every turn that lands on a different node. The router keeps a per-backend radix tree of recently-seen prompt-prefix hashes and biases routing toward the node whose cache is already warm for that prefix. TTFT drops from seconds to milliseconds on a cache hit.
+
+Enable per backend:
+
+```yaml
+backends:
+  - name: vllm-node-1
+    url: "http://gpu-1:8000"
+    type: vllm
+    kv_pinning:
+      enabled: true
+      max_prefix_age_seconds: 600   # forget prefixes older than 10 min
+      hash_chunk_tokens: 128        # prefix-hash granularity
+      max_nodes: 10000              # per-backend tree cap
+```
+
+Inspect the live trees at `GET /api/kv-trees`.
+
+### Queue-aware load balancing
+
+Health checks tell you a node is alive, not whether it's busy. With queue-aware routing on, the router scrapes each vLLM backend's `/metrics` (`vllm:num_requests_waiting` + `vllm:num_requests_running`) and prefers the least-loaded node. Stacked with KV pinning, candidates are ordered by warm-cache depth first, then least-loaded within the equal-cache group. A backend that is never successfully scraped (non-vLLM, or unreachable `/metrics`) falls back to its proxy active-request count, so it can never masquerade as idle.
+
+```yaml
+server:
+  queue_aware_routing: true     # default: false
+  queue_scrape_interval: 5s     # how often to poll /metrics
+```
+
+Per-backend `queue_depth` and `active_inference` are exposed in `GET /api/backends` and `GET /health`. Best-effort: a scrape failure never affects request handling.
+
+## Stateful Sessions
+
+Agentic clients (Claude Code, Cursor, custom agents) re-upload the whole conversation on every turn. Sessions let the client upload the full context **once**; the router stores it and hydrates the full prompt server-side on subsequent turns from just a session ID. This also lets the router inject provider cache breakpoints at the optimal static/dynamic boundary.
+
+```bash
+# First turn: upload full context, get a session id back
+curl http://localhost:8050/v1/chat/completions \
+  -H "X-Kronaxis-Session-Create: true" \
+  -d '{"messages":[{"role":"system","content":"...100k tokens..."}]}'
+# Response header: X-Kronaxis-Session-ID: sess_abc123
+
+# Later turns: send only the id + the new message
+curl http://localhost:8050/v1/chat/completions \
+  -H "X-Kronaxis-Session-ID: sess_abc123" \
+  -d '{"messages":[{"role":"user","content":"just the new question"}]}'
+```
+
+Headers: `X-Kronaxis-Session-Create`, `X-Kronaxis-Session-ID`, `X-Kronaxis-Session-TTL` (request); `X-Kronaxis-Session-Created` (response). Manage sessions at `GET/DELETE /v1/sessions[/<id>]`. Requires `DATABASE_URL` (sessions live in the `kr_sessions` Postgres table with a TTL sweeper + hot cache).
+
 ## Cost-Saving Principles
 
 The default `config.yaml` demonstrates six principles:
@@ -374,6 +431,11 @@ budgets:
 | `/api/config/yaml` | GET/PUT | View/update raw YAML config |
 | `/api/config/reload` | POST | Force config reload from disk |
 | `/api/stats` | GET | Live request statistics |
+| `/v1/sessions` / `/v1/sessions/<id>` | GET/DELETE | List/inspect/delete stateful sessions |
+| `/api/kv-trees` | GET | Inspect the per-backend KV-cache prefix trees |
+| `/api/costs/forecast` | GET | Per-service budget burn-rate forecast |
+| `/api/shadow/stats` | GET | Shadow-routing comparison stats |
+| `/api/dpo` | GET | DPO preference-pair export status |
 | `/metrics` | GET | Prometheus metrics |
 | `/` | GET | Embedded web UI |
 
@@ -503,6 +565,46 @@ curl http://localhost:8050/v1/chat/completions \
 ### What it costs
 
 Default local-st sidecar: zero per-request cost; one-time ingest of a 10 MB codebase = ~30s, ~10K rows. Gemini embedder: roughly $0.0001 per ingest of the same repo, $0.00001 per query. The savings on input tokens to downstream LLMs are ~10-50x larger than this in practical use.
+
+## Context Compression
+
+A content-aware compressor that runs inside the graphify pre-stage. Instead of one lexical pass over everything, it detects each prompt segment's type and applies the right compressor. Measured on a mixed corpus (tiktoken cl100k): **~36% lossless, up to ~65% on JSON/code-heavy bulk, prose ~30%→~50%** with the learned compressor. Clean-room reimplementation of [headroom](https://github.com/chopratejas/headroom) ideas (Apache-2.0); see `NOTICE`.
+
+Two tiers:
+
+- **Always-on lossless** (`always_structural`, default on) — JSON whitespace compaction + prose whitespace; keeps comments, never substitutes content. Runs on all traffic.
+- **Aggressive, opt-in** — per request via `X-Kronaxis-Graphify: compress`. Adds: JSON null/empty pruning + array-of-objects **tabularisation** (`{"__cols__":[…],"__rows__":[[…]]}`), string-literal-aware **code comment stripping** (safe languages only — bash/yaml excluded), and a learned **LLMLingua-2 prose compressor** (self-hosted GPU sidecar, see `services/prose-compressor/`).
+
+**CCR (reversible elision):** oversized segments can be stashed and replaced with a stub the model expands on demand via the `compress_retrieve` MCP tool or `GET /v1/compress/retrieve?id=<id>`. Elision only happens for clients that can fetch it back — a request with `X-Kronaxis-Compress-CCR: 1` or an allowlisted `X-Kronaxis-Service` — so content is never dropped from a client that can't retrieve it.
+
+```yaml
+graphify:
+  enabled: true
+  always_structural: true        # lossless tier on all traffic (default true)
+  json_tabularize: true          # hoist repeated keys in arrays of objects
+  json_drop_nulls: false         # prune null/empty fields (lossy)
+  ccr_enabled: false             # reversible compress-cache-retrieve
+  ccr_threshold_chars: 4000
+  ccr_services: []               # services allowed to receive CCR stubs
+  prose_compressor:
+    enabled: false               # learned LLMLingua-2 endpoint (lossy)
+    url: "http://gpu-host:8056/compress"
+    rate: 0.5                     # fraction of prose tokens to keep
+    min_chars: 600
+    timeout_ms: 8000
+```
+
+Response headers: `X-Kronaxis-Graphify` (mode applied: `lossless`/`compress`/`augment`/`off`), `X-Kronaxis-Graphify-Tokens-Saved`, `X-Kronaxis-Graphify-Chunks`. If the prose endpoint is down or slow, the router silently falls back to the lexical result — a request never fails because compression is unavailable.
+
+## Production Safety & Intelligence
+
+Shipped in v0.3.0. All off by default; enable per need.
+
+- **Schema-validated quality gates** — validate the cheap model's JSON output against a JSON Schema; on violation, silently retry on the fallback (expensive) backend so the client always gets schema-valid JSON. Enable with `QUALITY_GATE_ENABLED=true` (`QUALITY_GATE_MODE`, `QUALITY_GATE_FALLBACK`).
+- **Anthropic cache breakpoints** — set `cache_breakpoints: true` on a backend to inject `cache_control: {"type":"ephemeral"}` markers on the stable prefix. Stacks multiplicatively with sessions for provider-side cache hits.
+- **Shadow routing** — mirror a configurable % of traffic to a candidate backend and compare outputs (Jaccard similarity), without returning the shadow response. Configured via `ab_tests` (`variant_a`/`variant_b`/`split_pct`/`mode: shadow`); results at `GET /api/shadow/stats`. Answers "if we switched to model X, what would we save and how similar are the answers?"
+- **Cost forecasting** — linear burn-rate extrapolation per service ("`my-api` hits its $50 budget at 2:14 PM"). `GET /api/costs/forecast`.
+- **DPO dataset export** — every quality-gate fallback (cheap fails, expensive succeeds) is logged as a preference pair (rejected/chosen) to build a fine-tuning dataset. Enable with `DPO_EXPORT_PATH=...`; inspect via `GET /api/dpo`.
 
 ## Agent Gateway
 
