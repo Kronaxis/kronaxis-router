@@ -365,14 +365,14 @@ graphify:
   ingest_concurrency: 4
 
   # Per-service auto-mode: when X-Kronaxis-Service is set and matches a key
-  # below, use that mode instead of `default`. Lets each kronaxis service
-  # opt into a sensible default.
+  # below, use that mode instead of `default`. Lets each service opt into a
+  # sensible default. Keys are example service names — replace with your own.
   service_overrides:
-    animus: "augment"
-    vanguard: "compress"
-    atlas: "auto"
-    panel-studio: "augment"
-    beacon: "off"
+    chat-service: "augment"
+    bulk-extractor: "compress"
+    mixed-workload: "auto"
+    search-service: "augment"
+    monitoring: "off"
 
   # ────────────────────────────────────────────────────────────────────
   # KRONAXIS PLATFORM INTEGRATION (Router <-> Fabric)

@@ -22,9 +22,9 @@ func TestCCRAllowedHeaderOptIn(t *testing.T) {
 }
 
 func TestCCRAllowedServiceAllowlist(t *testing.T) {
-	m := newCCRTestMW(true, []string{"vanguard"})
+	m := newCCRTestMW(true, []string{"bulk-extractor"})
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	r.Header.Set("X-Kronaxis-Service", "Vanguard") // case-insensitive
+	r.Header.Set("X-Kronaxis-Service", "Bulk-Extractor") // case-insensitive
 	if !m.ccrAllowed(r) {
 		t.Error("allowlisted service should be allowed")
 	}
@@ -36,10 +36,10 @@ func TestCCRAllowedServiceAllowlist(t *testing.T) {
 }
 
 func TestCCRAllowedRequiresEnabled(t *testing.T) {
-	m := newCCRTestMW(false, []string{"vanguard"})
+	m := newCCRTestMW(false, []string{"bulk-extractor"})
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set("X-Kronaxis-Compress-CCR", "1")
-	r.Header.Set("X-Kronaxis-Service", "vanguard")
+	r.Header.Set("X-Kronaxis-Service", "bulk-extractor")
 	if m.ccrAllowed(r) {
 		t.Error("CCR disabled in config must override any opt-in")
 	}

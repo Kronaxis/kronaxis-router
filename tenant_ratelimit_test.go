@@ -355,13 +355,13 @@ func TestExtractTenant_HeaderPrecedence(t *testing.T) {
 	}{
 		{
 			name:    "tenant header wins",
-			headers: map[string]string{"X-Kronaxis-Tenant-ID": "acme", "X-Kronaxis-Service": "vanguard"},
+			headers: map[string]string{"X-Kronaxis-Tenant-ID": "acme", "X-Kronaxis-Service": "bulk-extractor"},
 			want:    "acme",
 		},
 		{
 			name:    "service header is fallback",
-			headers: map[string]string{"X-Kronaxis-Service": "vanguard"},
-			want:    "vanguard",
+			headers: map[string]string{"X-Kronaxis-Service": "bulk-extractor"},
+			want:    "bulk-extractor",
 		},
 		{
 			name:    "no headers means empty (unattributed)",

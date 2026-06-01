@@ -1,13 +1,12 @@
 [Unit]
 Description=Kronaxis agent-gateway (CLI agents as OpenAI endpoints)
-Documentation=file:///path/to/your/project/docs/plans/2026-05-08-agent-gateway-design.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=jason
-Group=jason
+User=kronaxis
+Group=kronaxis
 WorkingDirectory=/opt/kronaxis-router/agent-gateway
 ExecStart=/opt/kronaxis-router/agent-gateway/agent-gateway -config config.yaml
 Restart=on-failure
@@ -21,7 +20,7 @@ TasksMax=512
 
 # Hardening
 ProtectSystem=strict
-ReadWritePaths=/tmp ~/.claude
+ReadWritePaths=/tmp %h/.claude
 NoNewPrivileges=yes
 PrivateTmp=no
 ProtectKernelTunables=yes

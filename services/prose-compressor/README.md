@@ -13,16 +13,15 @@ low-information ones, typically keeping ~50% of prose tokens at minimal answer
 loss. The bert-base model is ~700MB and runs in well under a second on GPU —
 much cheaper than perplexity-based LLMLingua-1 (which needs a full causal LM).
 
-## Deploy (the GPU host, GPU)
+## Deploy (host with an NVIDIA GPU)
 
 ```bash
-# on the the GPU host (your-host)
-sudo mkdir -p /opt/kronaxis/prose-compressor && cd /opt/kronaxis/prose-compressor
+sudo mkdir -p /opt/prose-compressor && cd /opt/prose-compressor
 # copy app.py, requirements.txt here
 python3 -m venv .venv && . .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cu121   # match CUDA
 pip install -r requirements.txt
-HF_HOME=/var/cache/huggingface PROSE_DEVICE=cuda CUDA_VISIBLE_DEVICES=2 python app.py
+HF_HOME=/var/cache/huggingface PROSE_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 python app.py
 ```
 
 Or as a service:
@@ -64,6 +63,6 @@ fatal and uses its lexical result.
 ## Resource notes
 
 - GPU memory: ~1–1.5 GB for the bert-base LLMLingua-2 model.
-- Pin `CUDA_VISIBLE_DEVICES` so it doesn't contend with the vLLM tiers.
+- Pin `CUDA_VISIBLE_DEVICES` so it doesn't contend with other GPU workloads.
 - First request after start pays the model-load cost; `/health` warms nothing,
   so consider a warm-up `/compress` call on boot if first-request latency matters.

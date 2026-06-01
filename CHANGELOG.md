@@ -123,7 +123,7 @@ Token-saving retrieval-augmented generation that runs before classifier and cost
   - `compress` -- replace the largest fat user message with retrieved chunks (use for prompts that dump a whole file or doc)
   - `auto` -- heuristic on largest message size
   - `off` -- skip; pass-through unchanged
-- **Selection precedence**: `X-Kronaxis-Graphify` header > `X-Kronaxis-Service` override (animus -> augment, vanguard -> compress, atlas -> auto, ...) > `graphify.default` in config.
+- **Selection precedence**: `X-Kronaxis-Graphify` header > `X-Kronaxis-Service` override (chat-service -> augment, bulk-extractor -> compress, mixed-workload -> auto, ...) > `graphify.default` in config.
 - **Substrate**: `kr_chunks` table (id, source_path, chunk_idx, content, embedding VECTOR(N), metadata JSONB, source_mtime, ingested_at) with HNSW + GIN(content) + path indexes. Auto-created on startup with the embedder's dim.
 - **Hybrid retrieval**: pgvector cosine + BM25 reranking, with configurable weight, min cosine similarity, and token budget. Drops weak matches to avoid noise injection.
 - **Pluggable embedder**:

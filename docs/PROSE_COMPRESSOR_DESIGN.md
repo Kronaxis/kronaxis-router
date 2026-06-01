@@ -1,6 +1,6 @@
 # Learned prose-compressor — design
 
-**Status:** Code + service shipped 2026-06-01. GPU service not yet deployed (needs the GPU host + model download). Router-side client is merged and degrades to lexical when the endpoint is absent.
+**Status:** Code + service shipped 2026-06-01. GPU service not yet deployed (needs a GPU host + model download). Router-side client is merged and degrades to lexical when the endpoint is absent.
 
 ## Problem
 
@@ -38,7 +38,7 @@ POST /compress  {"text": "...", "rate": 0.5}
 
 - **Service down/slow** → router uses lexical result (timeout default 8s). No request ever fails because the compressor is unavailable.
 - **Lossy** → only on `compress` mode prose; the always-on lossless pass is untouched. Operators who want zero prose loss simply leave `prose_compressor.enabled: false`.
-- **GPU contention** → pin `CUDA_VISIBLE_DEVICES` away from the vLLM tiers.
+- **GPU contention** → pin `CUDA_VISIBLE_DEVICES` to a dedicated GPU.
 
 ## Open items (the honest ceiling)
 

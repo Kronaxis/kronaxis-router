@@ -104,10 +104,10 @@ graphify:
 
   # Per-service mode override (read from X-Kronaxis-Service header).
   service_overrides:
-    animus: "augment"
-    vanguard: "compress"
-    atlas: "auto"
-    beacon: "off"
+    chat-service: "augment"
+    bulk-extractor: "compress"
+    mixed-workload: "auto"
+    monitoring: "off"
 
   # Pluggable embedder backends.
   embedder:

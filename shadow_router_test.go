@@ -29,18 +29,18 @@ func TestJaccardSimilarity(t *testing.T) {
 func TestShadowRouter_AddTestAndMatch(t *testing.T) {
 	sr := NewShadowRouter("")
 	sr.AddTest(ShadowTest{
-		Name:     "vanguard-vs-cheap",
+		Name:     "bulk-extractor-vs-cheap",
 		VariantA: "claude-sonnet",
 		VariantB: "gemini-flash",
 		SplitPct: 50,
-		Match:    map[string]string{"service": "vanguard"},
+		Match:    map[string]string{"service": "bulk-extractor"},
 	})
 
-	if got := sr.MatchTest(RouteRequest{Service: "vanguard"}); got == nil {
-		t.Fatal("expected match for vanguard")
+	if got := sr.MatchTest(RouteRequest{Service: "bulk-extractor"}); got == nil {
+		t.Fatal("expected match for bulk-extractor")
 	}
-	if got := sr.MatchTest(RouteRequest{Service: "atlas"}); got != nil {
-		t.Errorf("unexpected match for atlas: %+v", got)
+	if got := sr.MatchTest(RouteRequest{Service: "mixed-workload"}); got != nil {
+		t.Errorf("unexpected match for mixed-workload: %+v", got)
 	}
 }
 

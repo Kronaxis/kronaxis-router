@@ -5,15 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=jason
-# the GPU host deployment paths (2026-06-01).
+User=kronaxis
 WorkingDirectory=/opt/prose-compressor
 Environment=PROSE_PORT=8056
 Environment=PROSE_DEVICE=cuda
-# the GPU host has 2x NVIDIA GPU: GPU 0 is the spare (~22GB free); GPU 1 runs the qwen
-# vLLM tier (do NOT use). Pin to GPU 0 so we never contend with vLLM.
+# Pin to a dedicated GPU so the model never contends with other GPU workloads.
 Environment=CUDA_VISIBLE_DEVICES=0
-# HF cache on the NAS (GOLDEN RULE 36: servers use /var/lib/kronaxis for persistent storage).
+# Persist the HuggingFace model cache so restarts don't re-download.
 Environment=HF_HOME=/var/cache/huggingface
 ExecStart=/opt/prose-compressor/.venv/bin/python app.py
 Restart=on-failure

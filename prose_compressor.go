@@ -26,7 +26,7 @@ var (
 )
 
 // httpProseCompressor calls a self-hosted learned-compression endpoint
-// (services/prose-compressor, LLMLingua on the the GPU host GPU). It owns its own
+// (services/prose-compressor, LLMLingua on a dedicated GPU). It owns its own
 // timeout so callers need not thread a context; on any failure the caller falls
 // back to the lexical prose passes, so a dead service degrades gracefully.
 type httpProseCompressor struct {

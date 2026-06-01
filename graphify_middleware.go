@@ -110,7 +110,7 @@ func (m *GraphifyMiddleware) Preprocess(ctx context.Context, req *ChatRequest, r
 	// and they guard for that themselves.
 	mode := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Kronaxis-Graphify")))
 	if mode == "" {
-		// Service-based override: e.g. animus -> augment, vanguard -> compress
+		// Service-based override: e.g. chat-service -> augment, bulk-extractor -> compress
 		if svc := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Kronaxis-Service"))); svc != "" {
 			if v, ok := m.cfg.ServiceOverrides[svc]; ok {
 				mode = strings.ToLower(strings.TrimSpace(v))

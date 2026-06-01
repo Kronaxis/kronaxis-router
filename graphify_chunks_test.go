@@ -171,7 +171,7 @@ func TestLooksLikeText(t *testing.T) {
 		{"empty", []byte(""), false},
 
 		// Stray 0x80 (continuation byte without lead) -- the exact case that
-		// crashed the the GPU host ingest at the Postgres upsert.
+		// crashed ingest at the Postgres upsert.
 		{"stray 0x80", []byte{0x68, 0x80, 0x65}, false},
 
 		// Truncated multibyte sequence (lead byte without continuation).
@@ -190,13 +190,13 @@ func TestLooksLikeText(t *testing.T) {
 
 func TestShouldIngestFile(t *testing.T) {
 	cases := map[string]bool{
-		"foo.go":     true,
-		"foo.md":     true,
-		"foo.png":    false,
-		".env":       false,
-		"foo.exe":    false,
-		"foo.yaml":   true,
-		"makefile":   false, // we only allow extension-less for README/LICENSE
+		"foo.go":   true,
+		"foo.md":   true,
+		"foo.png":  false,
+		".env":     false,
+		"foo.exe":  false,
+		"foo.yaml": true,
+		"makefile": false, // we only allow extension-less for README/LICENSE
 	}
 	for path, want := range cases {
 		if got := shouldIngestFile(path); got != want {

@@ -114,7 +114,7 @@ defaults:
   fallback_chain: [local-small, cloud-fast]
 
 budgets:
-  vanguard:
+  bulk-extractor:
     daily_usd: 50
     on_exceed: downgrade
   research:
@@ -122,7 +122,7 @@ budgets:
     on_exceed: reject
 
 rate_limits:
-  beacon:
+  monitoring:
     rps: 10
     burst: 30
 
@@ -148,10 +148,10 @@ graphify:
   auto_compress_chars: 8000
   auto_augment_max_chars: 4000
   service_overrides:
-    animus: "augment"
-    vanguard: "compress"
-    atlas: "auto"
-    beacon: "off"
+    chat-service: "augment"
+    bulk-extractor: "compress"
+    mixed-workload: "auto"
+    monitoring: "off"
   embedder:
     type: "local-st"
     url: "http://localhost:8053"

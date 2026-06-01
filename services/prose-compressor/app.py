@@ -7,7 +7,7 @@ lexical passes, so this service is strictly additive.
 
 Why LLMLingua-2: it keeps the high-information tokens and drops filler by scoring
 each token with a fine-tuned BERT/XLM-RoBERTa classifier. The bert-base model is
-~700MB and runs in well under a second per request on the the GPU host GPU — far cheaper
+~700MB and runs in well under a second per request on a dedicated GPU — far cheaper
 than perplexity-based LLMLingua-1 which needs a full causal LM.
 
 Env:
