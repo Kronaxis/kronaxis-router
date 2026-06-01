@@ -122,6 +122,7 @@ For the cost-routing proxy with cloud + local backends, see the [examples/](exam
 - **API authentication** -- Bearer token auth on `/api/*` endpoints via `ROUTER_API_TOKEN` env var.
 - **OpenAI API compatible** -- Drop-in replacement. Services change one URL.
 - **Graphify pre-stage (RAG)** -- Optional middleware that runs *before* every backend. Replaces fat context with retrieved chunks (compress mode) or augments thin prompts with project context (augment mode). Backed by pgvector + a swappable embedder (default: local sentence-transformers in a Docker sidecar; alternatives: Gemini, OpenAI). Stacks with cost routing and caching for compounding token savings. See `embedding-service/` and `kronaxis-router ingest`.
+- **Content-aware compression** -- Detects each prompt segment's type and applies the right compressor instead of one lexical pass: JSON compaction + array-of-objects tabularisation, string-literal-aware code comment stripping (safe languages only), and prose passes. An always-on **lossless** tier (JSON + whitespace, keeps comments, never substitutes) runs on all traffic; an aggressive opt-in tier adds null-pruning, tabularisation, comment stripping, a learned **LLMLingua-2 prose compressor** (self-hosted GPU sidecar, see `services/prose-compressor/`), and reversible **CCR** elision (oversized blocks stubbed + expandable via the `compress_retrieve` tool / `GET /v1/compress/retrieve`, gated on client capability so nothing is dropped from a client that can't fetch it back). Measured (tiktoken cl100k): ~36% lossless, up to ~65% on JSON/code-heavy bulk, prose ~30%→~50% learned. Clean-room reimplementation of [headroom](https://github.com/chopratejas/headroom) ideas (Apache-2.0); see `NOTICE`. Config under `graphify` (`structural_compress`, `json_tabularize`, `ccr_enabled`, `prose_compressor`).
 - **Agent Gateway** -- Optional sub-service at `agent-gateway/` (port 8055). Wraps CLI agents (Claude Code, Anthropic SDK, Gemini CLI) as OpenAI-compatible endpoints. Persistent named workspaces for multi-turn, warm pool for ~0.3s cold-start, JSON audit log, Prometheus metrics, live UI, multi-account auth pool with auto-disable on rate limits. Each request can run a real agentic loop in an isolated git worktree and return the diff alongside the assistant text.
 
 ## Install
@@ -356,6 +357,7 @@ budgets:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/v1/chat/completions` | POST | OpenAI-compatible proxy (main endpoint) |
+| `/v1/compress/retrieve?id=X` | GET | Fetch the original of a CCR-elided block (`?format=json` for metadata) |
 | `/health` | GET | Health check with backend statuses |
 | `/api/costs` | GET | Cost dashboard (daily/weekly/monthly breakdown) |
 | `/api/backends` | GET | List all backends and their status |
@@ -413,7 +415,13 @@ X-Kronaxis-Router-Version: 1.0.0
 X-Kronaxis-Backend: local-large
 X-Kronaxis-Rule: heavy-reasoning
 X-Kronaxis-Cache: HIT          # only on cache hits
+X-Kronaxis-Graphify: lossless  # compression/RAG mode applied: lossless|compress|augment|off
+X-Kronaxis-Graphify-Tokens-Saved: 6   # approx tokens saved by compression
 ```
+
+To opt a request into the aggressive (lossy) compression tier, send
+`X-Kronaxis-Graphify: compress`. CCR elision additionally requires
+`X-Kronaxis-Compress-CCR: 1` or an allowlisted `X-Kronaxis-Service`.
 
 ## Database (Optional)
 
