@@ -23,6 +23,7 @@ type GraphifyMiddleware struct {
 	cfg     GraphifyConfig
 	emb     Embedder
 	enabled atomic.Bool
+	prose   PromptCompressor // learned prose compressor; nil when disabled/unconfigured
 }
 
 // graphifyTokensSavedTotal and friends are package-level counters surfaced
@@ -44,6 +45,9 @@ func newGraphifyMiddleware(cfg GraphifyConfig, emb Embedder) *GraphifyMiddleware
 	// Either the embedded path (emb != nil + db) OR the fabric path
 	// (fabric_url set) satisfies "some retrieval backend".
 	m.enabled.Store(cfg.Enabled && (emb != nil || cfg.FabricEnabled()))
+	if cfg.ProseCompressor.Enabled && cfg.ProseCompressor.URL != "" {
+		m.prose = newHTTPProseCompressor(cfg.ProseCompressor.URL, cfg.ProseCompressor.TimeoutMS)
+	}
 	return m
 }
 
@@ -51,20 +55,59 @@ func (m *GraphifyMiddleware) Enabled() bool {
 	return m != nil && m.enabled.Load()
 }
 
+// ShouldRun reports whether Preprocess has any work to do: full graphify (needs
+// an embedder) OR the embedder-independent structural/CCR passes.
+func (m *GraphifyMiddleware) ShouldRun() bool {
+	if m == nil {
+		return false
+	}
+	return m.enabled.Load() || m.cfg.EffectiveAlwaysStructural() || m.cfg.CCREnabled
+}
+
+// applyLossless runs the strictly-lossless structural pass over every non-system
+// message and returns the estimated tokens saved. Safe on the hot path: it never
+// substitutes content and needs neither DB nor embedder.
+func (m *GraphifyMiddleware) applyLossless(req *ChatRequest) int {
+	opts := losslessCompressOpts()
+	saved := 0
+	for i, msg := range req.Messages {
+		if msg.Role == "system" {
+			continue
+		}
+		orig := contentString(msg.Content)
+		if orig == "" {
+			continue
+		}
+		out, st := CompressContentAware(orig, opts)
+		if len(out) < len(orig) {
+			req.Messages[i].Content = out
+			saved += st.Saved
+		}
+	}
+	if saved > 0 {
+		graphifyTokensSavedTotal.Add(uint64(saved))
+	}
+	return saved
+}
+
 // Preprocess decides on a mode and rewrites req.Messages in place. Returns
 // (mode, retrievedCount, tokensSaved, error). If error is non-nil, the request
 // is left unchanged.
 func (m *GraphifyMiddleware) Preprocess(ctx context.Context, req *ChatRequest, r *http.Request) (string, int, int, error) {
-	if !m.Enabled() {
-		return "off", 0, 0, nil
-	}
-	// Embedded path needs db; fabric path doesn't. Bail only if neither
-	// backend is available.
-	if db == nil && !m.cfg.FabricEnabled() {
-		return "off", 0, 0, nil
-	}
 	graphifyRequestsTotal.Add(1)
 
+	// Always-on lossless pass: runs for every request, every mode, even when the
+	// embedder/DB is unavailable. JSON compaction + prose whitespace only.
+	losslessSaved := 0
+	if m != nil && m.cfg.EffectiveAlwaysStructural() {
+		losslessSaved = m.applyLossless(req)
+	}
+
+	// Resolve mode. Note: compress mode's structural stage (JSON compaction +
+	// tabularisation, code comment stripping, CCR elision) needs neither
+	// embedder nor DB, so we resolve and run it regardless. Only RAG paths
+	// (augment, and compress's stage-2 substitution) require a live embedder+DB,
+	// and they guard for that themselves.
 	mode := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Kronaxis-Graphify")))
 	if mode == "" {
 		// Service-based override: e.g. animus -> augment, vanguard -> compress
@@ -85,17 +128,58 @@ func (m *GraphifyMiddleware) Preprocess(ctx context.Context, req *ChatRequest, r
 		mode = m.classify(req)
 	}
 
+	// CCR elision removes content from the prompt, so it is only safe when the
+	// client can call compress_retrieve. Allow it for explicitly-opted-in
+	// requests or allowlisted services; never for unknown callers.
+	ccrAllowed := m.ccrAllowed(r)
+
+	var (
+		outMode string
+		chunks  int
+		saved   int
+		err     error
+	)
 	switch mode {
 	case "off", "":
 		graphifyOffTotal.Add(1)
-		return "off", 0, 0, nil
+		outMode, chunks, saved, err = "off", 0, 0, nil
 	case "augment":
-		return m.augment(ctx, req)
+		outMode, chunks, saved, err = m.augment(ctx, req)
 	case "compress":
-		return m.compress(ctx, req)
+		outMode, chunks, saved, err = m.compress(ctx, req, ccrAllowed)
 	default:
-		return "off", 0, 0, fmt.Errorf("unknown graphify mode %q", mode)
+		outMode, chunks, saved, err = "off", 0, 0, fmt.Errorf("unknown graphify mode %q", mode)
 	}
+
+	// Fold in the always-on lossless savings, and make sure the proxy re-marshals
+	// (it does so when chunks>0 or saved>0) when only the lossless pass fired.
+	saved += losslessSaved
+	if outMode == "off" && losslessSaved > 0 {
+		outMode = "lossless"
+	}
+	return outMode, chunks, saved, err
+}
+
+// ccrAllowed reports whether CCR elision is permitted for this request: either
+// the caller explicitly opted in via X-Kronaxis-Compress-CCR: 1, or its
+// X-Kronaxis-Service is in the configured allowlist. CCR must be enabled too.
+func (m *GraphifyMiddleware) ccrAllowed(r *http.Request) bool {
+	if !m.cfg.CCREnabled {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("X-Kronaxis-Compress-CCR")) == "1" {
+		return true
+	}
+	svc := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Kronaxis-Service")))
+	if svc == "" {
+		return false
+	}
+	for _, s := range m.cfg.CCRServices {
+		if strings.ToLower(strings.TrimSpace(s)) == svc {
+			return true
+		}
+	}
+	return false
 }
 
 // classify implements "auto" mode: a tiny heuristic over the messages.
@@ -119,6 +203,11 @@ func (m *GraphifyMiddleware) classify(req *ChatRequest) string {
 }
 
 func (m *GraphifyMiddleware) augment(ctx context.Context, req *ChatRequest) (string, int, int, error) {
+	// Augment is pure RAG. retrieve() picks Fabric or embedded and returns
+	// empty cleanly when no backend is up, so we only gate on the feature flag.
+	if !m.Enabled() {
+		return "off", 0, 0, nil
+	}
 	graphifyAugmentsTotal.Add(1)
 	queryText := lastUserMessage(req)
 	if queryText == "" {
@@ -149,17 +238,10 @@ func (m *GraphifyMiddleware) augment(ctx context.Context, req *ChatRequest) (str
 	return "augment", len(results), 0, nil
 }
 
-func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest) (string, int, int, error) {
+func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest, ccrAllowed bool) (string, int, int, error) {
 	graphifyCompressTotal.Add(1)
-	queryText := lastUserMessage(req)
-	if queryText == "" {
-		return "off", 0, 0, nil
-	}
-	// Find the biggest non-system message; replace if it's huge.
-	threshold := m.cfg.AutoCompressChars
-	if threshold <= 0 {
-		threshold = 8000
-	}
+
+	// Find the biggest non-system message.
 	biggest := -1
 	biggestLen := 0
 	for i, msg := range req.Messages {
@@ -172,9 +254,59 @@ func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest) (st
 			biggest = i
 		}
 	}
-	if biggest < 0 || biggestLen < threshold {
-		// Nothing to compress; fall through to augment so we still help.
+	if biggest < 0 {
+		return "off", 0, 0, nil
+	}
+	original := contentString(req.Messages[biggest].Content)
+	totalSaved := 0
+
+	// Stage 1: aggressive content-aware compression (JSON compaction +
+	// tabularisation, code comment stripping, prose passes, optional CCR
+	// elision). Never substitutes the payload; works without embedder/DB.
+	if m.cfg.EffectiveStructuralCompress() {
+		var ccr *CCRStore
+		ccrThreshold := 0
+		if m.cfg.CCREnabled && ccrAllowed && ccrStore != nil {
+			ccr = ccrStore
+			ccrThreshold = m.cfg.EffectiveCCRThreshold()
+		}
+		opts := fullCompressOpts(0, m.cfg.JSONDropNulls, m.cfg.JSONTabularize, ccr, ccrThreshold)
+		if m.prose != nil {
+			opts.LearnedProse = m.prose
+			opts.LearnedProseRate = m.cfg.ProseCompressor.EffectiveRate()
+			opts.LearnedProseMinChar = m.cfg.ProseCompressor.EffectiveMinChars()
+		}
+		structural, st := CompressContentAware(original, opts)
+		if len(structural) < len(original) {
+			req.Messages[biggest].Content = structural
+			totalSaved += st.Saved
+			graphifyTokensSavedTotal.Add(uint64(st.Saved))
+			original = structural
+			biggestLen = len(structural)
+		}
+	}
+
+	// Stage 2: if the message is still huge and retrieval is available, do the
+	// lossy RAG substitution (replace the body with retrieved snippets).
+	threshold := m.cfg.AutoCompressChars
+	if threshold <= 0 {
+		threshold = 8000
+	}
+	ragBackend := m.cfg.FabricEnabled() || (m.emb != nil && db != nil)
+	if biggestLen < threshold || !ragBackend {
+		if totalSaved > 0 {
+			return "compress", 0, totalSaved, nil
+		}
+		// Nothing to compress structurally and below the RAG threshold; fall
+		// through to augment so we still help.
 		return m.augment(ctx, req)
+	}
+	queryText := lastUserMessage(req)
+	if queryText == "" {
+		if totalSaved > 0 {
+			return "compress", 0, totalSaved, nil
+		}
+		return "off", 0, 0, nil
 	}
 	results, err := m.retrieve(ctx, RetrieveOpts{
 		Query:        queryText,
@@ -185,22 +317,27 @@ func (m *GraphifyMiddleware) compress(ctx context.Context, req *ChatRequest) (st
 	})
 	if err != nil {
 		graphifyErrorsTotal.Add(1)
+		if totalSaved > 0 {
+			return "compress", 0, totalSaved, nil
+		}
 		return "off", 0, 0, err
 	}
 	if len(results) == 0 {
+		if totalSaved > 0 {
+			return "compress", 0, totalSaved, nil
+		}
 		return "off", 0, 0, nil
 	}
-	original := contentString(req.Messages[biggest].Content)
-	compressed := renderContext(results) + "\n\n--- (original message body summarised above; replace pending review) ---"
-	saved := len(original) - len(compressed)
-	if saved < 0 {
-		// Compression actually made it bigger; bail out to be safe.
-		return "off", 0, 0, nil
+	ragText := renderContext(results) + "\n\n--- (original message body summarised above; replace pending review) ---"
+	if len(ragText) >= len(original) {
+		// RAG substitution would not shrink it further; keep the Stage-1 result.
+		return "compress", 0, totalSaved, nil
 	}
-	req.Messages[biggest].Content = compressed
+	ragSaved := (len(original) - len(ragText)) / 4 // rough chars-to-tokens
+	req.Messages[biggest].Content = ragText
 	graphifyChunksTotal.Add(uint64(len(results)))
-	graphifyTokensSavedTotal.Add(uint64(saved / 4)) // rough chars-to-tokens
-	return "compress", len(results), saved / 4, nil
+	graphifyTokensSavedTotal.Add(uint64(ragSaved))
+	return "compress", len(results), totalSaved + ragSaved, nil
 }
 
 // retrieve is the splice point for the Kronaxis Platform integration.

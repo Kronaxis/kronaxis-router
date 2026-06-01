@@ -1,62 +1,287 @@
 package main
 
 import (
+	"fmt"
 	"strings"
-	"unicode/utf8"
 )
 
-// CompressPrompt reduces token count of a prompt by removing redundancy.
-// Applied automatically to background/bulk requests when the prompt exceeds
-// a configured token threshold. Interactive/normal requests are never compressed.
+// Content-aware prompt compression. A clean-room Go take on headroom's
+// ContentRouter idea (https://github.com/chopratejas/headroom, Apache-2.0):
+// detect what each segment of a prompt actually is — fenced code, structured
+// JSON, or prose — and apply the right compressor instead of one lossy pass
+// over everything. No headroom source was copied; see NOTICE.
 //
-// Techniques:
-// 1. Remove excessive whitespace (multiple spaces, blank lines)
-// 2. Collapse repeated instructions
-// 3. Truncate very long context blocks (keep head + tail)
-// 4. Remove markdown formatting noise (decorative headers, horizontal rules)
-//
-// Returns the compressed text and estimated token savings.
+// The structural passes (JSON compaction, code comment stripping) are
+// near-lossless and run regardless of any token budget. truncateMiddle is the
+// only lossy fallback and runs only when maxTokens > 0 and the result is still
+// over budget.
+
+// CompressStats reports what CompressContentAware did, for metrics/observability.
+type CompressStats struct {
+	OriginalTokens int
+	FinalTokens    int
+	Saved          int // OriginalTokens - FinalTokens, floored at 0
+	JSONBlocks     int
+	CodeBlocks     int
+	ProseBlocks    int
+	Truncated      bool
+	Elided         int // segments stashed into the CCR store as retrieval stubs
+	LearnedProse   int // prose segments compressed by the learned model
+}
+
+// CompressOpts selects which transforms run. Two ready-made profiles:
+//   - losslessCompressOpts(): safe for an always-on pass over all traffic.
+//     JSON compaction + prose whitespace only; keeps comments, no dedup, no
+//     truncation, no CCR.
+//   - fullCompressOpts(...): the aggressive bulk/background profile.
+type CompressOpts struct {
+	MaxTokens      int       // >0 enables truncateMiddle fallback
+	DropJSONNulls  bool      // prune null/empty JSON fields (lossy)
+	Tabularize     bool      // hoist repeated keys from arrays of objects
+	StripComments  bool      // remove code comments (safe languages only)
+	ProsePasses    bool      // markdown-noise strip + line dedup on prose (lossy-ish)
+	TrimWhitespace bool      // collapse blank lines + trailing ws on prose (lossless)
+	CCR            *CCRStore // if set, oversized segments are stashed + stubbed
+	CCRThreshold   int       // chars; segment bodies larger than this are elided (0=off)
+
+	// LearnedProse, if set, runs a model-based (LLMLingua-style) compressor over
+	// prose segments after the lexical passes. LOSSY; full profile only. On any
+	// error the lexical result is kept, so a dead service degrades gracefully.
+	LearnedProse        PromptCompressor
+	LearnedProseRate    float64 // target fraction to keep (0–1); 0 → 0.5
+	LearnedProseMinChar int     // skip segments smaller than this
+}
+
+func losslessCompressOpts() CompressOpts {
+	return CompressOpts{TrimWhitespace: true}
+}
+
+func fullCompressOpts(maxTokens int, dropNulls, tabularize bool, ccr *CCRStore, ccrThreshold int) CompressOpts {
+	return CompressOpts{
+		MaxTokens:      maxTokens,
+		DropJSONNulls:  dropNulls,
+		Tabularize:     tabularize,
+		StripComments:  true,
+		ProsePasses:    true,
+		TrimWhitespace: true,
+		CCR:            ccr,
+		CCRThreshold:   ccrThreshold,
+	}
+}
+
+type segKind int
+
+const (
+	kindProse segKind = iota
+	kindCode
+)
+
+type segment struct {
+	kind segKind
+	lang string // fenced-block language tag (code segments only)
+	body string
+}
+
+// CompressContentAware routes each segment of text to the appropriate
+// compressor under the given options, then optionally truncates to a budget.
+// It never returns text larger than the input.
+func CompressContentAware(text string, opts CompressOpts) (string, CompressStats) {
+	stats := CompressStats{OriginalTokens: CountTokens(text)}
+
+	segs := splitFences(text)
+	var out []string
+	for _, s := range segs {
+		switch s.kind {
+		case kindCode:
+			body := s.body
+			if isJSONLang(s.lang) || looksLikeJSON(body) {
+				if crushed, ok := crushJSONOpts(body, opts.DropJSONNulls, opts.Tabularize); ok {
+					body = crushed
+					stats.JSONBlocks++
+				} else if opts.StripComments {
+					body = compressCode(body, s.lang)
+					stats.CodeBlocks++
+				}
+			} else if opts.StripComments {
+				body = compressCode(body, s.lang)
+				stats.CodeBlocks++
+			}
+			body = maybeElide(body, s.lang, &opts, &stats)
+			out = append(out, "```"+s.lang)
+			out = append(out, body)
+			out = append(out, "```")
+		case kindProse:
+			body := s.body
+			if looksLikeJSON(body) {
+				if crushed, ok := crushJSONOpts(body, opts.DropJSONNulls, opts.Tabularize); ok {
+					body = crushed
+					stats.JSONBlocks++
+				} else {
+					body = compressProseWith(body, opts)
+					body = maybeLearnedProse(body, &opts, &stats)
+					stats.ProseBlocks++
+				}
+			} else {
+				body = compressProseWith(body, opts)
+				body = maybeLearnedProse(body, &opts, &stats)
+				stats.ProseBlocks++
+			}
+			body = maybeElide(body, "", &opts, &stats)
+			out = append(out, body)
+		}
+	}
+
+	compressed := strings.Join(out, "\n")
+
+	if opts.MaxTokens > 0 && CountTokens(compressed) > opts.MaxTokens {
+		compressed = truncateMiddle(compressed, opts.MaxTokens)
+		stats.Truncated = true
+	}
+
+	stats.FinalTokens = CountTokens(compressed)
+	stats.Saved = stats.OriginalTokens - stats.FinalTokens
+	if stats.Saved < 0 {
+		// Compression somehow inflated the text (rare; e.g. dominated by tiny
+		// prose). Return the original to guarantee we never make things worse.
+		stats.Saved = 0
+		stats.FinalTokens = stats.OriginalTokens
+		return text, stats
+	}
+	return compressed, stats
+}
+
+// maybeElide stashes an oversized segment body into the CCR store and returns a
+// compact retrieval stub in its place. Returns body unchanged if CCR is off or
+// the body is under threshold.
+func maybeElide(body, lang string, opts *CompressOpts, stats *CompressStats) string {
+	if opts.CCR == nil || opts.CCRThreshold <= 0 || len(body) <= opts.CCRThreshold {
+		return body
+	}
+	id := opts.CCR.Put(body)
+	stats.Elided++
+	preview := previewLine(body, 160)
+	tag := "headroom-elided"
+	if lang != "" {
+		tag += " lang=" + lang
+	}
+	return fmt.Sprintf("[%s id=%s bytes=%d — retrieve full content via the compress_retrieve tool or GET /v1/compress/retrieve?id=%s]\npreview: %s",
+		tag, id, len(body), id, preview)
+}
+
+// maybeLearnedProse runs the model-based prose compressor when configured and
+// the segment is large enough. Lossy; on any failure or non-shrinking result it
+// keeps the lexical body, so a dead service never breaks a request.
+func maybeLearnedProse(body string, opts *CompressOpts, stats *CompressStats) string {
+	if opts.LearnedProse == nil || len(body) < opts.LearnedProseMinChar {
+		return body
+	}
+	out, err := opts.LearnedProse.Compress(body, opts.LearnedProseRate)
+	if err != nil || out == "" || len(out) >= len(body) {
+		return body
+	}
+	stats.LearnedProse++
+	return out
+}
+
+func previewLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
+// compressProseWith applies prose transforms according to opts: full lexical
+// passes if ProsePasses, otherwise just lossless whitespace collapse if
+// TrimWhitespace, otherwise nothing.
+func compressProseWith(s string, opts CompressOpts) string {
+	switch {
+	case opts.ProsePasses:
+		return compressProse(s)
+	case opts.TrimWhitespace:
+		return collapseWhitespace(s)
+	default:
+		return s
+	}
+}
+
+// CompressPrompt is the backward-compatible entry point: aggressive
+// content-aware compression with a token budget, returning text and savings.
 func CompressPrompt(text string, maxTokens int) (string, int) {
-	originalTokens := CountTokens(text)
-	if maxTokens <= 0 || originalTokens <= maxTokens {
-		return text, 0
+	compressed, stats := CompressContentAware(text, fullCompressOpts(maxTokens, false, false, nil, 0))
+	return compressed, stats.Saved
+}
+
+// isJSONLang reports whether a fenced-block language tag denotes JSON.
+func isJSONLang(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "json", "json5", "jsonl", "ndjson":
+		return true
+	default:
+		return false
+	}
+}
+
+// splitFences breaks text into alternating prose and fenced-code segments.
+// A fence is a line whose trimmed form starts with ```; the closing fence is a
+// line whose trimmed form is exactly ```. An unterminated fence runs to EOF.
+func splitFences(text string) []segment {
+	lines := strings.Split(text, "\n")
+	var segs []segment
+	var prose []string
+
+	flushProse := func() {
+		if len(prose) > 0 {
+			segs = append(segs, segment{kind: kindProse, body: strings.Join(prose, "\n")})
+			prose = nil
+		}
 	}
 
-	compressed := text
-
-	// Step 1: Normalise whitespace
-	compressed = collapseWhitespace(compressed)
-
-	// Step 2: Remove markdown noise
-	compressed = stripMarkdownNoise(compressed)
-
-	// Step 3: Deduplicate repeated lines
-	compressed = deduplicateLines(compressed)
-
-	// Step 4: If still over budget, truncate middle (keep head + tail)
-	if CountTokens(compressed) > maxTokens {
-		compressed = truncateMiddle(compressed, maxTokens)
+	i := 0
+	for i < len(lines) {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "```") {
+			lang := strings.TrimSpace(strings.TrimPrefix(t, "```"))
+			i++
+			var code []string
+			for i < len(lines) && strings.TrimSpace(lines[i]) != "```" {
+				code = append(code, lines[i])
+				i++
+			}
+			closed := i < len(lines)
+			flushProse()
+			segs = append(segs, segment{kind: kindCode, lang: lang, body: strings.Join(code, "\n")})
+			if closed {
+				i++ // consume the closing fence
+			}
+			continue
+		}
+		prose = append(prose, lines[i])
+		i++
 	}
+	flushProse()
+	return segs
+}
 
-	newTokens := CountTokens(compressed)
-	savings := originalTokens - newTokens
-	if savings < 0 {
-		savings = 0
-	}
-	return compressed, savings
+// compressProse applies the lexical passes to free-form text only. These are
+// deliberately kept away from code segments: stripMarkdownNoise rewrites
+// "# heading" lines, which would corrupt Python/shell `#` comments if applied
+// to code.
+func compressProse(s string) string {
+	s = collapseWhitespace(s)
+	s = stripMarkdownNoise(s)
+	s = deduplicateLines(s)
+	return s
 }
 
 // collapseWhitespace normalises excessive whitespace.
 func collapseWhitespace(s string) string {
-	// Collapse multiple blank lines to one
 	for strings.Contains(s, "\n\n\n") {
 		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
 	}
-	// Collapse multiple spaces to one
 	for strings.Contains(s, "  ") {
 		s = strings.ReplaceAll(s, "  ", " ")
 	}
-	// Trim trailing whitespace per line
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
 		lines[i] = strings.TrimRight(line, " \t")
@@ -64,18 +289,16 @@ func collapseWhitespace(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// stripMarkdownNoise removes decorative markdown elements that consume tokens
-// but add no semantic value to an LLM.
+// stripMarkdownNoise removes decorative markdown that consumes tokens but adds
+// no semantic value. Applied to prose only (see compressProse).
 func stripMarkdownNoise(s string) string {
 	lines := strings.Split(s, "\n")
 	var result []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Skip horizontal rules
 		if trimmed == "---" || trimmed == "===" || trimmed == "***" || trimmed == "___" {
 			continue
 		}
-		// Simplify headers (remove # prefix, keep text)
 		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") ||
 			strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "#### ") {
 			line = strings.TrimLeft(trimmed, "# ")
@@ -85,7 +308,7 @@ func stripMarkdownNoise(s string) string {
 	return strings.Join(result, "\n")
 }
 
-// deduplicateLines removes exact duplicate lines (keeps first occurrence).
+// deduplicateLines removes exact duplicate non-blank lines (keeps first).
 func deduplicateLines(s string) string {
 	lines := strings.Split(s, "\n")
 	seen := make(map[string]bool)
@@ -105,18 +328,20 @@ func deduplicateLines(s string) string {
 	return strings.Join(result, "\n")
 }
 
-// truncateMiddle keeps the first and last portions of the text,
-// replacing the middle with a "[... truncated ...]" marker.
+// truncateMiddle keeps the head and tail of the text, replacing the middle with
+// a marker. Lossy fallback of last resort.
 func truncateMiddle(s string, maxTokens int) string {
 	runes := []rune(s)
 	totalRunes := len(runes)
 
-	// Estimate chars per token
 	charsPerToken := 4
 	if totalRunes > 0 {
 		currentTokens := CountTokens(s)
 		if currentTokens > 0 {
 			charsPerToken = totalRunes / currentTokens
+			if charsPerToken < 1 {
+				charsPerToken = 1
+			}
 		}
 	}
 
@@ -125,16 +350,17 @@ func truncateMiddle(s string, maxTokens int) string {
 		return s
 	}
 
-	// Keep 60% from head, 40% from tail
 	headChars := targetChars * 60 / 100
-	tailChars := targetChars - headChars - 30 // 30 chars for the marker
+	tailChars := targetChars - headChars - 30 // 30 runes for the marker
 
 	if headChars < 0 || tailChars < 0 {
+		if targetChars > totalRunes {
+			targetChars = totalRunes
+		}
 		return string(runes[:targetChars])
 	}
 
 	head := string(runes[:headChars])
-	tail := string(runes[utf8.RuneCountInString(s)-tailChars:])
-
+	tail := string(runes[totalRunes-tailChars:])
 	return head + "\n[... truncated for cost optimisation ...]\n" + tail
 }

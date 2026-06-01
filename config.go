@@ -58,6 +58,87 @@ type GraphifyConfig struct {
 	FabricKey        string            `yaml:"fabric_key"`         // Bearer token (or env:VAR_NAME)
 	FabricRAGWeights *FabricRAGWeights `yaml:"fabric_rag_weights"` // optional override; default pure-cosine
 	FabricTimeoutMS  int               `yaml:"fabric_timeout_ms"`  // default 5000
+
+	// ----- Content-aware compression (headroom-inspired) -----
+	// StructuralCompress runs the near-lossless content-aware pass (JSON
+	// compaction + code comment stripping) in compress mode before any lossy
+	// RAG substitution. *bool so unset → default true; set false to disable.
+	StructuralCompress *bool `yaml:"structural_compress"`
+	// JSONDropNulls additionally prunes null/empty fields from JSON payloads
+	// during structural compression. Lossy; default false (compaction only).
+	JSONDropNulls bool `yaml:"json_drop_nulls"`
+	// AlwaysStructural runs a strictly-lossless structural pass (JSON
+	// compaction + prose whitespace; keeps comments, no dedup, no truncation)
+	// over ALL traffic regardless of graphify mode, even when the embedder is
+	// down. *bool so unset → default true.
+	AlwaysStructural *bool `yaml:"always_structural"`
+	// JSONTabularize hoists repeated keys out of arrays of uniform objects in
+	// the aggressive compress path. Lossless and reversible. Default false.
+	JSONTabularize bool `yaml:"json_tabularize"`
+	// CCREnabled turns on compress-cache-retrieve: oversized segments are
+	// stashed locally and replaced with a retrieval stub the model can expand
+	// via the compress_retrieve tool. Default false.
+	CCREnabled bool `yaml:"ccr_enabled"`
+	// CCRThresholdChars is the per-segment size above which CCR elides. 0 → 4000.
+	CCRThresholdChars int `yaml:"ccr_threshold_chars"`
+	// CCRCapacity bounds the in-process CCR store (entries). 0 → 1024.
+	CCRCapacity int `yaml:"ccr_capacity"`
+	// CCRServices lists X-Kronaxis-Service values whose clients can call
+	// compress_retrieve. CCR elision (which removes content from the prompt)
+	// only happens for these services, or when a request sends
+	// X-Kronaxis-Compress-CCR: 1 — never for a client that cannot retrieve it.
+	CCRServices []string `yaml:"ccr_services"`
+	// ProseCompressor configures the optional learned (LLMLingua-style) prose
+	// compressor — a self-hosted GPU endpoint the router calls on the
+	// aggressive compress path. Lossy; off by default.
+	ProseCompressor ProseCompressorConfig `yaml:"prose_compressor"`
+}
+
+// ProseCompressorConfig configures the learned prose-compression endpoint.
+type ProseCompressorConfig struct {
+	Enabled   bool    `yaml:"enabled"`
+	URL       string  `yaml:"url"`        // e.g. http://gpu-host:8056/compress
+	Rate      float64 `yaml:"rate"`       // target fraction to keep (0–1); 0 → 0.5
+	MinChars  int     `yaml:"min_chars"`  // skip prose smaller than this; 0 → 600
+	TimeoutMS int     `yaml:"timeout_ms"` // per-call timeout; 0 → 8000
+}
+
+func (p ProseCompressorConfig) EffectiveMinChars() int {
+	if p.MinChars <= 0 {
+		return 600
+	}
+	return p.MinChars
+}
+
+func (p ProseCompressorConfig) EffectiveRate() float64 {
+	if p.Rate <= 0 || p.Rate >= 1 {
+		return 0.5
+	}
+	return p.Rate
+}
+
+// EffectiveStructuralCompress returns true unless explicitly disabled.
+func (g GraphifyConfig) EffectiveStructuralCompress() bool {
+	if g.StructuralCompress == nil {
+		return true
+	}
+	return *g.StructuralCompress
+}
+
+// EffectiveAlwaysStructural returns true unless explicitly disabled.
+func (g GraphifyConfig) EffectiveAlwaysStructural() bool {
+	if g.AlwaysStructural == nil {
+		return true
+	}
+	return *g.AlwaysStructural
+}
+
+// EffectiveCCRThreshold returns the per-segment elision threshold in chars.
+func (g GraphifyConfig) EffectiveCCRThreshold() int {
+	if g.CCRThresholdChars <= 0 {
+		return 4000
+	}
+	return g.CCRThresholdChars
 }
 
 // FabricRAGWeights mirrors the weights block sent on /v1/rag. Pointer

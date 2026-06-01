@@ -2,6 +2,22 @@
 
 All notable changes to kronaxis-router. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added: content-aware + learned prompt compression
+
+A content router (`compress.go`) that detects each prompt segment's type and applies the right compressor instead of one lexical pass over everything:
+
+- **JSON** (`compress_json.go`): whitespace compaction, optional null/empty pruning, and array-of-objects tabularisation (`{"__cols__":[...],"__rows__":[[...]]}`) that hoists repeated keys once. Lossless/reversible.
+- **Code** (`compress_code.go`): a string-literal-aware comment + blank-line stripper. Restricted to languages where it is provably safe (Go, C-family, JS/TS, Rust, Java, Python, SQL); bash/yaml deliberately excluded (`${var#x}`, heredocs). Never corrupts string contents.
+- **Prose**: lexical passes, plus an optional **learned** compressor (`prose_compressor.go`) that calls a self-hosted LLMLingua-2 endpoint (`services/prose-compressor/`). Lossy; falls back to lexical on any error.
+- **Always-on lossless tier**: JSON compaction + whitespace over all traffic (keeps comments, never substitutes).
+- **CCR** (`ccr_store.go`, `ccr_http.go`): reversible compress-cache-retrieve. Oversized segments are stashed and replaced with a stub the model expands via the new `compress_retrieve` MCP tool / `GET /v1/compress/retrieve`. Elision is gated on client capability, so content is never dropped from a client that cannot retrieve it.
+
+Measured (tiktoken cl100k): ~36% lossless across a mixed corpus, up to ~65% on JSON/code-heavy bulk, prose ~30%→~50% with the learned compressor.
+
+Clean-room Go reimplementation of ideas from [headroom](https://github.com/chopratejas/headroom) (Apache-2.0); see `NOTICE`.
+
 ## [v0.3.0] -- 2026-05-10
 
 Phase 1 to 3 roadmap items shipped. The router moves from sovereign tier routing proxy to full LLM control plane.

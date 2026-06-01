@@ -166,8 +166,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Graphify pre-stage: compress fat context or augment thin context
 	// before classifier + forwarding. Skips silently when disabled or on
 	// retrieval errors (we never fail a request because graphify is sad).
-	if graphifyMW != nil && graphifyMW.Enabled() {
-		if mode, n, saved, err := graphifyMW.Preprocess(r.Context(), &req, r); err == nil && n > 0 {
+	if graphifyMW != nil && graphifyMW.ShouldRun() {
+		if mode, n, saved, err := graphifyMW.Preprocess(r.Context(), &req, r); err == nil && (n > 0 || saved > 0) {
 			w.Header().Set("X-Kronaxis-Graphify", mode)
 			w.Header().Set("X-Kronaxis-Graphify-Chunks", fmt.Sprintf("%d", n))
 			if saved > 0 {

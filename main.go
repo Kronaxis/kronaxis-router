@@ -191,6 +191,11 @@ func runServer() {
 	// kr_chunks table. Retrieval is delegated to the Fabric service.
 	gcfg := cfg.Graphify.WithDefaults()
 	cfg.Graphify = gcfg
+	if gcfg.Enabled && gcfg.CCREnabled {
+		ccrStore = newCCRStore(gcfg.CCRCapacity)
+		logger.Printf("graphify CCR store enabled: capacity=%d threshold=%d chars",
+			gcfg.CCRCapacity, gcfg.EffectiveCCRThreshold())
+	}
 	if gcfg.Enabled {
 		var emb Embedder
 		// Probe local embedder + bootstrap embedded schema -- best-effort.

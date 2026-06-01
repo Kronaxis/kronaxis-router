@@ -1,0 +1,31 @@
+kronaxis-router
+================
+
+Third-party design attribution
+------------------------------
+
+The content-aware prompt compression in this project
+(compress.go, compress_json.go, compress_code.go) is a clean-room Go
+reimplementation of ideas described by the Headroom project:
+
+    Headroom — https://github.com/chopratejas/headroom
+    Licensed under the Apache License, Version 2.0.
+
+Specifically, the following concepts were used as inspiration:
+
+  - ContentRouter: detect the content type of each segment and dispatch
+    to a type-specific compressor (compress.go).
+  - SmartCrusher: structural compaction of JSON / structured data
+    (compress_json.go).
+  - CodeCompressor: dropping comments and comment-only lines from code
+    (compress_code.go).
+
+No Headroom source code was copied. The implementations here are
+original Go, written against the published descriptions of the above
+concepts, and differ in approach (e.g. the code compressor is a
+string-literal-aware lexical scanner restricted to languages where
+comment stripping is provably safe, rather than a full AST parser).
+
+This attribution is provided as a courtesy and in the spirit of the
+Apache 2.0 NOTICE convention; because no Apache-licensed source is
+redistributed here, no Apache 2.0 obligations attach to this file.

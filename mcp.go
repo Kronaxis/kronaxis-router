@@ -272,6 +272,13 @@ func (s *MCPServer) handleToolsList(id json.RawMessage) *jsonRPCResponse {
 			Description: "Force the router to reload its configuration from disk. Use after manually editing config.yaml.",
 			InputSchema: jsonSchema("object", nil, nil),
 		},
+		{
+			Name:        "compress_retrieve",
+			Description: "Retrieve the full original content that the router elided during compression. When a message contains a '[headroom-elided id=... ]' stub, pass that id here to get the complete original text back.",
+			InputSchema: jsonSchema("object", map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "The CCR id from the elision stub"},
+			}, []string{"id"}),
+		},
 	}
 
 	return &jsonRPCResponse{
@@ -324,6 +331,9 @@ func (s *MCPServer) handleToolCall(id json.RawMessage, params json.RawMessage) *
 		result = s.callGetRaw("/api/config/yaml")
 	case "router_reload":
 		result = s.callPostEmpty("/api/config/reload")
+	case "compress_retrieve":
+		id, _ := call.Arguments["id"].(string)
+		result = s.callGetRaw("/v1/compress/retrieve?id=" + id)
 	default:
 		result = mcpToolResult{
 			Content: []mcpContent{{Type: "text", Text: "Unknown tool: " + call.Name}},

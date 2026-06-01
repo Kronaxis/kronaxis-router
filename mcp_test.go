@@ -46,8 +46,8 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatal("result is not mcpToolsResult")
 	}
 
-	if len(result.Tools) != 12 {
-		t.Errorf("got %d tools, want 12", len(result.Tools))
+	if len(result.Tools) != 13 {
+		t.Errorf("got %d tools, want 13", len(result.Tools))
 	}
 
 	// Check all expected tools are present
@@ -64,6 +64,7 @@ func TestMCPToolsList(t *testing.T) {
 		"router_update_budget":  false,
 		"router_config":         false,
 		"router_reload":         false,
+		"compress_retrieve":     false,
 	}
 
 	for _, tool := range result.Tools {
