@@ -322,6 +322,7 @@ func runServer() {
 		writeJSON(w, 200, handleDPOStatsBody())
 	})
 	mux.HandleFunc("/api/costs/forecast", handleCostForecast)
+	mux.HandleFunc("/api/cost-telemetry/retrieval", handleCostTelemetryRetrieval) // Cost Governed RAG retrieval leg ingest (inert unless KX_COST_TELEMETRY on)
 	mux.HandleFunc("/api/shadow/stats", handleShadowResults)
 	mux.HandleFunc("/cost-lab", handleCostLab)
 	mux.HandleFunc("/cost-lab/", handleCostLab)

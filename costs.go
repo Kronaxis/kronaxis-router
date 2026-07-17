@@ -191,6 +191,10 @@ func logRequest(meta RouteRequest, route RouteResult, inputTokens, outputTokens 
 		latency.Milliseconds(),
 		success, errMsg,
 	)
+
+	// Cost Governed RAG generation leg. No op unless KX_COST_TELEMETRY is on,
+	// so the live cost path above is unchanged by default. See cost_telemetry.go.
+	emitGenerationTelemetry(meta, route, inputTokens, outputTokens, latency)
 }
 
 // handleCosts serves the cost dashboard API.
